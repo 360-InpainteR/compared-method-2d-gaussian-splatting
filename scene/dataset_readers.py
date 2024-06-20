@@ -30,6 +30,7 @@ class CameraInfo(NamedTuple):
     FovY: np.array
     FovX: np.array
     image: np.array
+    image_mask: np.array
     image_path: str
     image_name: str
     width: int
@@ -93,12 +94,21 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder):
             FovX = focal2fov(focal_length_x, width)
         else:
             assert False, "Colmap camera model not handled: only undistorted datasets (PINHOLE or SIMPLE_PINHOLE cameras) supported!"
-
         image_path = os.path.join(images_folder, os.path.basename(extr.name))
         image_name = os.path.basename(image_path).split(".")[0]
         image = Image.open(image_path)
+        # read object mask
+        image_extensions = ['.jpg', '.JPG', '.png', '.PNG']
+        image_base_path = os.path.join(os.path.dirname(images_folder)+'/seg', os.path.splitext(os.path.basename(extr.name))[0])
+        for ext in image_extensions:
+            if os.path.exists(image_base_path + ext):
+                image_mask_path = image_base_path + ext
+                break
+        image_mask=np.array(Image.open(image_mask_path).convert("L"))
+        mask_array = np.where(image_mask >127, 1, 0)
+        image_mask = Image.fromarray((mask_array*255).astype(np.uint8))
 
-        cam_info = CameraInfo(uid=uid, R=R, T=T, FovY=FovY, FovX=FovX, image=image,
+        cam_info = CameraInfo(uid=uid, R=R, T=T, FovY=FovY, FovX=FovX, image=image, image_mask=image_mask,
                               image_path=image_path, image_name=image_name, width=width, height=height)
         cam_infos.append(cam_info)
     sys.stdout.write('\n')
@@ -200,7 +210,6 @@ def readCamerasFromTransforms(path, transformsfile, white_background, extension=
             image_path = os.path.join(path, cam_name)
             image_name = Path(cam_name).stem
             image = Image.open(image_path)
-
             im_data = np.array(image.convert("RGBA"))
 
             bg = np.array([1,1,1]) if white_background else np.array([0, 0, 0])
