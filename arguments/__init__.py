@@ -55,6 +55,7 @@ class ModelParams(ParamGroup):
         self.data_device = "cuda"
         self.eval = False
         self.render_items = ['RGB', 'Alpha', 'Normal', 'Depth', 'Edge', 'Curvature']
+        self.is_finetune = False
         super().__init__(parser, "Loading Parameters", sentinel)
 
     def extract(self, args):
@@ -92,6 +93,9 @@ class OptimizationParams(ParamGroup):
         self.densify_from_iter = 500
         self.densify_until_iter = 15_000
         self.densify_grad_threshold = 0.0002
+        
+        # sds loss
+        self.sds_loss_weight = 0.0001
         super().__init__(parser, "Optimization Parameters")
 
 def get_combined_args(parser : ArgumentParser):
@@ -115,3 +119,37 @@ def get_combined_args(parser : ArgumentParser):
         if v != None:
             merged_dict[k] = v
     return Namespace(**merged_dict)
+
+class StableDiffusionParams(ParamGroup):
+    def __init__(self, parser):
+        self.fp16 = False
+        self.vram_O = False
+        self.sd_version = 2.1
+        self.hf_key = ""
+        self.t_range = [0.02, 0.98]
+        
+        self.text = "a gray stone"
+        self.text_normal = "a normal map of a gray stone"
+        
+        self.images_prompt = ""
+        self.radius_range = [3.0, 3.5]
+        self.exp_start_iter = 0
+        self.exp_end_iter = 30000
+        self.normal_start = 500
+
+        
+        self.progressive_view = False
+        
+        self.is_rgb_guidance = True
+        self.is_colla_guidance = False
+        self.is_normal_guidance = True
+        
+        self.is_crop = False
+        self.rgb_guidance_scale = 7.5
+        self.lambda_guidance = 1.0
+        self.normal_guidance_scale = 1.5
+        
+        self.normalmap_render_factor = 7
+        
+        self.save_guidance_path = 'dream_fusion.png'
+        super().__init__(parser, "Stable Diffusion Parameters")

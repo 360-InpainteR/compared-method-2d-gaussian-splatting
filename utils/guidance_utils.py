@@ -1,3 +1,6 @@
+'''
+    Below code is referenced from MVIP-NeRF
+'''
 import math
 import numpy as np
 import random
@@ -214,7 +217,7 @@ class Pretrain_Model(object):
     @torch.no_grad()
     def prepare_embeddings_image(self):
 
-        if self.opt.images is not None:
+        if self.opt.images_prompt is not None:
 
             if 'clip' in self.guidance:
                 self.embeddings['clip']['image'] = self.guidance['clip'].get_img_embeds(self.rgb)
@@ -236,22 +239,22 @@ class Pretrain_Model(object):
         # self.mask_cropped = mask_cropped
 
         # random pose on the fly
-        _, _, _, phis, _ = rand_poses(self.B, self.device, self.opt,
-                                      radius_range=self.opt.radius_range,
-                                      theta_range=self.opt.theta_range,
-                                      phi_range=self.opt.phi_range, return_dirs=True,
-                                      angle_overhead=self.opt.angle_overhead,
-                                      angle_front=self.opt.angle_front,
-                                      uniform_sphere_rate=self.opt.uniform_sphere_rate)
+        # _, _, _, phis, _ = rand_poses(self.B, self.device, self.opt,
+        #                               radius_range=self.opt.radius_range,
+        #                               theta_range=self.opt.theta_range,
+        #                               phi_range=self.opt.phi_range, return_dirs=True,
+        #                               angle_overhead=self.opt.angle_overhead,
+        #                               angle_front=self.opt.angle_front,
+        #                               uniform_sphere_rate=self.opt.uniform_sphere_rate)
 
-        # delta polar/azimuth/radius to default view
-        delta_azimuth = phis - self.opt.default_azimuth
-        delta_azimuth[delta_azimuth > 180] -= 360  # range in [-180, 180]
+        # # delta polar/azimuth/radius to default view
+        # delta_azimuth = phis - self.opt.default_azimuth
+        # delta_azimuth[delta_azimuth > 180] -= 360  # range in [-180, 180]
 
-        data = {'azimuth': delta_azimuth}
+        # data = {'azimuth': delta_azimuth}
 
-        # interpolate text_z
-        azimuth = data['azimuth']  # [-180, 180]
+        # # interpolate text_z
+        # azimuth = data['azimuth']  # [-180, 180]
 
 
         self.global_step += 1
@@ -259,7 +262,6 @@ class Pretrain_Model(object):
         # i.e. what proportion of this experiment have we completed (in terms of iterations) so far?
         exp_iter_ratio = (self.global_step - self.opt.exp_start_iter) / (
                     self.opt.exp_end_iter - self.opt.exp_start_iter)
-
         # progressively relaxing view range
         if self.opt.progressive_view:
             r = min(1.0, self.opt.progressive_view_init_ratio + 2.0 * exp_iter_ratio)
@@ -284,6 +286,7 @@ class Pretrain_Model(object):
                                                                     grad_scale=self.opt.lambda_guidance,
                                                                     save_guidance_path=self.opt.save_guidance_path)
                     else:
+                        # go into here
                         loss = loss + self.guidance['SD'].train_step_sd(i, masks, self.opt.text, self.pred_rgb, as_latent=True,
                                                                 guidance_scale=self.opt.rgb_guidance_scale,
                                                                 grad_scale=self.opt.lambda_guidance,
@@ -296,6 +299,7 @@ class Pretrain_Model(object):
                                                                 save_guidance_path=self.opt.save_guidance_path)
                 
                 if self.opt.is_normal_guidance and i > self.opt.normal_start:
+                    # go into here
                     loss = 1.0*loss + 1.0*self.guidance['SD'].train_step_sd_normal(i, masks, self.opt.text_normal, self.pre_normal_map, as_latent=True,
                                                                 guidance_scale=self.opt.normal_guidance_scale, normal_start = self.opt.normal_start,
                                                                 grad_scale=self.opt.lambda_guidance,
