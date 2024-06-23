@@ -12,3 +12,4 @@ diffusers
 accelerate
 transformers
 ConfigArgParse
+tensorboard
