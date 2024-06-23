@@ -26,6 +26,7 @@ import uuid
 from tqdm import tqdm
 from utils.image_utils import psnr, render_net_image
 from argparse import ArgumentParser, Namespace
+import configargparse
 from arguments import ModelParams, PipelineParams, OptimizationParams, StableDiffusionParams
 try:
     from torch.utils.tensorboard import SummaryWriter
@@ -295,11 +296,13 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
 
 if __name__ == "__main__":
     # Set up command line argument parser
-    parser = ArgumentParser(description="Training script parameters")
+    # parser = ArgumentParser(description="Training script parameters")
+    parser = configargparse.ArgumentParser()
     lp = ModelParams(parser)
     op = OptimizationParams(parser)
     pp = PipelineParams(parser)
     sp = StableDiffusionParams(parser)
+    parser.add_argument('--config', is_config_file=True, help='config file path')
     parser.add_argument('--ip', type=str, default="127.0.0.1")
     parser.add_argument('--port', type=int, default=6009)
     parser.add_argument('--detect_anomaly', action='store_true', default=False)

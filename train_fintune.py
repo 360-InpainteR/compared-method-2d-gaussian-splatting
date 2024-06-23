@@ -26,6 +26,7 @@ import uuid
 from tqdm import tqdm
 from utils.image_utils import psnr, render_net_image
 from argparse import ArgumentParser, Namespace
+import configargparse
 from arguments import ModelParams, PipelineParams, OptimizationParams, StableDiffusionParams
 try:
     from torch.utils.tensorboard import SummaryWriter
@@ -94,15 +95,19 @@ def training(dataset, opt, pipe, sp, testing_iterations, saving_iterations, chec
         
         gt_image = viewpoint_cam.original_image.cuda()
         
-        # if mask_training:
         Ll1 = torch.tensor(0.0).cuda()
         loss = torch.tensor(0.0).cuda()
-        #     # unmasked region mse loss 
-        #     Ll1 = l1_loss(image_m, gt_image_m)
-        #     loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image_m, gt_image_m))
-        # else: 
-        #     Ll1 = l1_loss(image, gt_image)
-        #     loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
+        if mask_training:
+            # unmasked region mse loss 
+            kernel_size = 10
+            image_mask = cv2.dilate(viewpoint_cam.original_image_mask, np.ones((kernel_size, kernel_size), dtype=np.uint8), iterations=1)
+            image_m = image*torch.tensor(1-image_mask).cuda().repeat(3,1,1)
+            gt_image_m = gt_image *torch.tensor(1-image_mask).cuda().repeat(3,1,1)
+            Ll1 = l1_loss(image_m, gt_image_m)
+            loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image_m, gt_image_m))
+        else: 
+            Ll1 = l1_loss(image, gt_image)
+            loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
         
         # regularization
         lambda_normal = opt.lambda_normal if iteration > 7000 else 0.0
@@ -123,6 +128,8 @@ def training(dataset, opt, pipe, sp, testing_iterations, saving_iterations, chec
         combine_image = gt_image_m + image * torch.tensor(image_mask).cuda().repeat(3,1,1)
         mask = torch.tensor(image_mask, dtype=torch.float).cuda().unsqueeze(0).unsqueeze(0)
         loss_rgb_sds = pretrained_model.cal_loss(iteration, None, surf_normal.unsqueeze(0), None, combine_image.unsqueeze(0), None, mask, None, 1)        
+        
+        # TODO: Can masked SDS only propagate to sepcific Gaussians? Maybe we can let gaussian wtih an attribute backgorunf, unseen, 
         
         # breakpoint()
 
@@ -296,11 +303,13 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
 
 if __name__ == "__main__":
     # Set up command line argument parser
-    parser = ArgumentParser(description="Training script parameters")
+    # parser = ArgumentParser(description="Training script parameters")
+    parser = configargparse.ArgumentParser()
     lp = ModelParams(parser)
     op = OptimizationParams(parser)
     pp = PipelineParams(parser)
     sp = StableDiffusionParams(parser)
+    parser.add_argument('--config', is_config_file=True, help='config file path')
     parser.add_argument('--ip', type=str, default="127.0.0.1")
     parser.add_argument('--port', type=int, default=6009)
     parser.add_argument('--detect_anomaly', action='store_true', default=False)
