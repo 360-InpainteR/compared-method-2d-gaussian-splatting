@@ -94,7 +94,7 @@ def training(dataset, opt, pipe, sp, testing_iterations, saving_iterations, chec
         image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
         
         gt_image = viewpoint_cam.original_image.cuda()
-        if mask_training & iteration:
+        if mask_training and iteration:
             kernel_size = 10
             image_mask = cv2.dilate(viewpoint_cam.original_image_mask, np.ones((kernel_size, kernel_size), dtype=np.uint8), iterations=1)
             image_m = image*torch.tensor(1-image_mask).cuda().repeat(3,1,1)
@@ -119,7 +119,7 @@ def training(dataset, opt, pipe, sp, testing_iterations, saving_iterations, chec
         
         # masked sds loss
         loss_rgb_sds = torch.tensor(0.0).cuda()
-        if iteration >= 0:
+        if iteration >= 0 and opt.sds_loss_weight > 0:
             combine_image = gt_image_m + image * torch.tensor(image_mask).cuda().repeat(3,1,1)
             mask = torch.tensor(image_mask, dtype=torch.float).cuda().unsqueeze(0).unsqueeze(0)
             loss_rgb_sds = pretrained_model.cal_loss(iteration, None, surf_normal.unsqueeze(0), None, combine_image.unsqueeze(0), None, mask, None, 1)        
