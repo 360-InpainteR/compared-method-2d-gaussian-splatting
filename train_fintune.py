@@ -38,6 +38,32 @@ num_gpus = torch.cuda.device_count()
 print(f"Number of GPUs available: {num_gpus}")
 device_ids = list(range(num_gpus))
 
+import lpips
+LPIPS = lpips.LPIPS(net='vgg')
+for param in LPIPS.parameters():
+    param.requires_grad = False
+LPIPS.cuda()
+
+def mask_to_bbox(mask):
+    # Find the rows and columns where the mask is non-zero
+    rows = torch.any(mask, dim=1)
+    cols = torch.any(mask, dim=0)
+    ymin, ymax = torch.where(rows)[0][[0, -1]]
+    xmin, xmax = torch.where(cols)[0][[0, -1]]
+    
+    return xmin, ymin, xmax, ymax
+
+def crop_using_bbox(image, bbox):
+    xmin, ymin, xmax, ymax = bbox
+    return image[:, ymin:ymax+1, xmin:xmax+1]
+
+def divide_into_patches(image, K):
+    B, C, H, W = image.shape
+    patch_h, patch_w = H // K, W // K
+    patches = torch.nn.functional.unfold(image, (patch_h, patch_w), stride=(patch_h, patch_w))
+    patches = patches.view(B, C, patch_h, patch_w, -1)
+    return patches.permute(0, 4, 1, 2, 3)
+
 
 def training(dataset, opt, pipe, sp, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, mask_training=False):
     first_iter = 0
@@ -101,20 +127,27 @@ def training(dataset, opt, pipe, sp, testing_iterations, saving_iterations, chec
             # unmasked region mse loss 
             kernel_size = 10
             image_mask = cv2.dilate(viewpoint_cam.original_image_mask, np.ones((kernel_size, kernel_size), dtype=np.uint8), iterations=1)
-            image_m = image*torch.tensor(1-image_mask).cuda().repeat(3,1,1)
-            gt_image_m = gt_image *torch.tensor(1-image_mask).cuda().repeat(3,1,1)
-            Ll1 = l1_loss(image_m, gt_image_m)
-            loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image_m, gt_image_m))
-        else: 
-            Ll1 = l1_loss(image, gt_image)
-            loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
+        image_mask_tensor = torch.tensor(image_mask).cuda().repeat(3,1,1)
+        image_m = image * image_mask_tensor
+        gt_image_m = gt_image * image_mask_tensor
+        Ll1 = torch.tensor(0.0).cuda()
         
-        # regularization
+        bbox = mask_to_bbox(image_mask_tensor[0])
+        cropped_image = crop_using_bbox(image, bbox)
+        cropped_gt_image = crop_using_bbox(gt_image, bbox)
+        K = 2
+        rendering_patches = divide_into_patches(cropped_image[None, ...], K)
+        gt_patches = divide_into_patches(cropped_gt_image[None, ...], K)
+        lpips_loss = LPIPS((rendering_patches.squeeze()*2-1), (gt_patches.squeeze()*2-1)).mean()
+        loss = opt.lambda_lpips * lpips_loss
+        
+        
+        # fintune only masked region: 2. normal/dist regularization
         lambda_normal = opt.lambda_normal if iteration > 7000 else 0.0
         lambda_dist = opt.lambda_dist if iteration > 3000 else 0.0
         rend_dist = render_pkg["rend_dist"]
-        rend_normal  = render_pkg['rend_normal']
-        surf_normal = render_pkg['surf_normal']
+        rend_normal  = render_pkg['rend_normal'] * image_mask_tensor
+        surf_normal = render_pkg['surf_normal'] * image_mask_tensor
         normal_error = (1 - (rend_normal * surf_normal).sum(dim=0))[None]
         normal_loss = lambda_normal * (normal_error).mean()
         dist_loss = lambda_dist * (rend_dist).mean()
