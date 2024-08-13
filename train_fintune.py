@@ -121,12 +121,9 @@ def training(dataset, opt, pipe, sp, testing_iterations, saving_iterations, chec
         
         gt_image = viewpoint_cam.original_image.cuda()
         
-        Ll1 = torch.tensor(0.0).cuda()
-        loss = torch.tensor(0.0).cuda()
-        if mask_training:
-            # unmasked region mse loss 
-            kernel_size = 10
-            image_mask = cv2.dilate(viewpoint_cam.original_image_mask, np.ones((kernel_size, kernel_size), dtype=np.uint8), iterations=1)
+        # finetune only masked region: 1. LPIPS loss
+        kernel_size = 10
+        image_mask = cv2.dilate(viewpoint_cam.original_image_mask, np.ones((kernel_size, kernel_size), dtype=np.uint8), iterations=1)
         image_mask_tensor = torch.tensor(image_mask).cuda().repeat(3,1,1)
         image_m = image * image_mask_tensor
         gt_image_m = gt_image * image_mask_tensor
