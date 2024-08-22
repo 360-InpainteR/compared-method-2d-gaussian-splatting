@@ -78,6 +78,7 @@ class OptimizationParams(ParamGroup):
         self.position_lr_final = 0.0000016
         self.position_lr_delay_mult = 0.01
         self.position_lr_max_steps = 30_000
+        self.is_masked_lr = 0.01
         self.feature_lr = 0.0025
         self.opacity_lr = 0.05
         self.scaling_lr = 0.005
@@ -94,9 +95,11 @@ class OptimizationParams(ParamGroup):
         self.densify_from_iter = 500
         self.densify_until_iter = 15_000
         self.densify_grad_threshold = 0.0002
+        self.optimize_is_masked_iter = 0
+        
         
         # sds loss
-        self.sds_loss_weight = 0.0001
+        self.sds_loss_weight = 0.0
         super().__init__(parser, "Optimization Parameters")
 
 def get_combined_args(parser : ArgumentParser):
@@ -149,6 +152,7 @@ class StableDiffusionParams(ParamGroup):
         self.rgb_guidance_scale = 7.5
         self.lambda_guidance = 1.0
         self.normal_guidance_scale = 1.5
+        self.colla_guidance_scale = 7.5
         
         self.normalmap_render_factor = 7
         

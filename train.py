@@ -18,7 +18,7 @@ from torch import nn
 from utils.loss_utils import l1_loss, ssim
 from utils.guidance_utils import Pretrain_Model
 from guidance.sd import StableDiffusion, SpecifyGradient
-from gaussian_renderer import render, network_gui
+from gaussian_renderer import render, render_mask, network_gui
 import sys
 from scene import Scene, GaussianModel
 from utils.general_utils import safe_state
@@ -64,14 +64,12 @@ def training(dataset, opt, pipe, sp, testing_iterations, saving_iterations, chec
     ema_dist_for_log = 0.0
     ema_normal_for_log = 0.0
     ema_sds_for_log = 0.0
+    ema_is_masked_for_log = 0.0
     
-    # Pretrained inpainter
-    guidance = nn.ModuleDict()
-    guidance['SD'] = StableDiffusion('cuda', sp.fp16, sp.vram_O, sp.sd_version, sp.hf_key, sp.t_range)
-    # guidance['SD'] = nn.DataParallel(guidance['SD'], device_ids=device_ids)
-    # if isinstance(guidance['SD'], nn.DataParallel):
-    #     guidance['SD'] = guidance['SD'].module
-    pretrained_model = Pretrain_Model(sp, device='cuda', guidance=guidance)
+    # # Pretrained inpainter
+    # guidance = nn.ModuleDict()
+    # guidance['SD'] = StableDiffusion('cuda', sp.fp16, sp.vram_O, sp.sd_version, sp.hf_key, sp.t_range)
+    # pretrained_model = Pretrain_Model(sp, device='cuda', guidance=guidance)
 
 
     progress_bar = tqdm(range(first_iter, opt.iterations), desc="Training progress")
@@ -93,19 +91,21 @@ def training(dataset, opt, pipe, sp, testing_iterations, saving_iterations, chec
         render_pkg = render(viewpoint_cam, gaussians, pipe, background)
         image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
         
+        # Rgb
         gt_image = viewpoint_cam.original_image.cuda()
-        if mask_training and iteration:
-            kernel_size = 10
-            image_mask = cv2.dilate(viewpoint_cam.original_image_mask, np.ones((kernel_size, kernel_size), dtype=np.uint8), iterations=1)
-            image_m = image*torch.tensor(1-image_mask).cuda().repeat(3,1,1)
-            gt_image_m = gt_image *torch.tensor(1-image_mask).cuda().repeat(3,1,1)
-            # unmasked region mse loss 
-            Ll1 = l1_loss(image_m, gt_image_m)
-            loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image_m, gt_image_m))
-        else: 
-            Ll1 = l1_loss(image, gt_image)
-            loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
+        Ll1 = l1_loss(image, gt_image)
+        loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
         
+        # is masked
+        is_masked_loss = torch.tensor(0.0).cuda()
+        optimize_is_masked = iteration > opt.optimize_is_masked_iter
+        if optimize_is_masked:
+            render_pkg_mask = render_mask(viewpoint_cam, gaussians, pipe, background)
+            is_masked = render_pkg_mask["is_masked"]
+            is_masked_gt = torch.tensor(viewpoint_cam.original_image_mask, dtype=torch.float).cuda().unsqueeze(0).repeat(3,1,1)
+            is_masked_loss = l1_loss(is_masked, is_masked_gt)
+            loss += opt.is_masked_lr * is_masked_loss
+            
         # regularization
         lambda_normal = opt.lambda_normal if iteration > 7000 else 0.0
         lambda_dist = opt.lambda_dist if iteration > 3000 else 0.0
@@ -140,6 +140,7 @@ def training(dataset, opt, pipe, sp, testing_iterations, saving_iterations, chec
             ema_dist_for_log = 0.4 * dist_loss.item() + 0.6 * ema_dist_for_log
             ema_normal_for_log = 0.4 * normal_loss.item() + 0.6 * ema_normal_for_log
             ema_sds_for_log = 0.4 * loss_rgb_sds.item() + 0.6 * ema_sds_for_log
+            ema_is_masked_for_log = 0.4 * is_masked_loss.item() + 0.6 * ema_is_masked_for_log
 
 
             if iteration % 10 == 0:
@@ -148,6 +149,7 @@ def training(dataset, opt, pipe, sp, testing_iterations, saving_iterations, chec
                     "distort": f"{ema_dist_for_log:.{5}f}",
                     "normal": f"{ema_normal_for_log:.{5}f}",
                     "sds": f"{ema_sds_for_log:.{5}f}",
+                    "is_masked": f"{ema_is_masked_for_log:.{5}f}",
                     "Points": f"{len(gaussians.get_xyz)}"
                 }
                 progress_bar.set_postfix(loss_dict)
@@ -160,6 +162,7 @@ def training(dataset, opt, pipe, sp, testing_iterations, saving_iterations, chec
             if tb_writer is not None:
                 tb_writer.add_scalar('train_loss_patches/dist_loss', ema_dist_for_log, iteration)
                 tb_writer.add_scalar('train_loss_patches/normal_loss', ema_normal_for_log, iteration)
+                tb_writer.add_scalar('train_loss_patches/is_masked_loss', ema_is_masked_for_log, iteration)
 
             training_report(tb_writer, iteration, Ll1, loss, l1_loss, iter_start.elapsed_time(iter_end), testing_iterations, scene, render, (pipe, background))
             if (iteration in saving_iterations):
@@ -254,6 +257,7 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
                 psnr_test = 0.0
                 for idx, viewpoint in enumerate(config['cameras']):
                     render_pkg = renderFunc(viewpoint, scene.gaussians, *renderArgs)
+                    render_pkg_mask = render_mask(viewpoint, scene.gaussians, *renderArgs)
                     image = torch.clamp(render_pkg["render"], 0.0, 1.0)
                     gt_image = torch.clamp(viewpoint.original_image.to("cuda"), 0.0, 1.0)
                     if tb_writer and (idx < 5):
@@ -272,6 +276,9 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
                             tb_writer.add_images(config['name'] + "_view_{}/rend_normal".format(viewpoint.image_name), rend_normal[None], global_step=iteration)
                             tb_writer.add_images(config['name'] + "_view_{}/surf_normal".format(viewpoint.image_name), surf_normal[None], global_step=iteration)
                             tb_writer.add_images(config['name'] + "_view_{}/rend_alpha".format(viewpoint.image_name), rend_alpha[None], global_step=iteration)
+                            
+                            rend_is_masked = render_pkg_mask["is_masked"]                           
+                            tb_writer.add_images(config['name'] + "_view_{}/is_masked".format(viewpoint.image_name), rend_is_masked[None], global_step=iteration)
 
                             rend_dist = render_pkg["rend_dist"]
                             rend_dist = colormap(rend_dist.cpu().numpy()[0])
