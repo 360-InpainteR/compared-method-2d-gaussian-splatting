@@ -12,7 +12,10 @@
 import os
 from argparse import ArgumentParser
 from os import makedirs
+from random import randint
 
+import cv2
+import lpips
 import numpy as np
 import open3d as o3d
 import torch
@@ -28,78 +31,123 @@ from utils.mesh_utils import GaussianExtractor, post_process_mesh, to_cam_open3d
 from utils.render_utils import create_videos, generate_path
 
 
-def points_inside_convex_hull(point_cloud, mask, remove_outliers=True, outlier_factor=1.0):
-    """
-    Given a point cloud and a mask indicating a subset of points, this function computes the convex hull of the 
-    subset of points and then identifies all points from the original point cloud that are inside this convex hull.
+
+def finetune_inpaint(opt, model_path, iteration, views, gaussians, pipeline, background, classifier, selected_obj_ids, cameras_extent, removal_thresh, finetune_iteration):
     
-    Parameters:
-    - point_cloud (torch.Tensor): A tensor of shape (N, 3) representing the point cloud.
-    - mask (torch.Tensor): A tensor of shape (N,) indicating the subset of points to be used for constructing the convex hull.
-    - remove_outliers (bool): Whether to remove outliers from the masked points before computing the convex hull. Default is True.
-    - outlier_factor (float): The factor used to determine outliers based on the IQR method. Larger values will classify more points as outliers.
+    # fix some gaussians
+    gaussians.inpaint_setup(opt)
+
+    iterations = finetune_iteration
+    progress_bar = tqdm(range(iterations), desc="Finetuning progress")
+    LPIPS = lpips.LPIPS(net='vgg')
+    for param in LPIPS.parameters():
+        param.requires_grad = False
+    LPIPS.cuda()
     
-    Returns:
-    - inside_hull_tensor_mask (torch.Tensor): A mask of shape (N,) with values set to True for the points inside the convex hull 
-                                              and False otherwise.
-    """
+    def mask_to_bbox(mask):
+        # Find the rows and columns where the mask is non-zero
+        rows = torch.any(mask, dim=1)
+        cols = torch.any(mask, dim=0)
+        ymin, ymax = torch.where(rows)[0][[0, -1]]
+        xmin, xmax = torch.where(cols)[0][[0, -1]]
+    
+        return xmin, ymin, xmax, ymax
 
-    # Extract the masked points from the point cloud
-    masked_points = point_cloud[mask].cpu().numpy()
+    def crop_using_bbox(image, bbox):
+        xmin, ymin, xmax, ymax = bbox
+        return image[:, ymin:ymax+1, xmin:xmax+1]
 
-    # Remove outliers if the option is selected
-    if remove_outliers:
-        Q1 = np.percentile(masked_points, 25, axis=0)
-        Q3 = np.percentile(masked_points, 75, axis=0)
-        IQR = Q3 - Q1
-        outlier_mask = (masked_points < (Q1 - outlier_factor * IQR)) | (masked_points > (Q3 + outlier_factor * IQR))
-        filtered_masked_points = masked_points[~np.any(outlier_mask, axis=1)]
-    else:
-        filtered_masked_points = masked_points
+    def divide_into_patches(image, K):
+        B, C, H, W = image.shape
+        patch_h, patch_w = H // K, W // K
+        patches = torch.nn.functional.unfold(image, (patch_h, patch_w), stride=(patch_h, patch_w))
+        patches = patches.view(B, C, patch_h, patch_w, -1)
+        return patches.permute(0, 4, 1, 2, 3)
 
-    # Compute the Delaunay triangulation of the filtered masked points
-    delaunay = Delaunay(filtered_masked_points)
-
-    # Determine which points from the original point cloud are inside the convex hull
-    points_inside_hull_mask = delaunay.find_simplex(point_cloud.cpu().numpy()) >= 0
-
-    # Convert the numpy mask back to a torch tensor and return
-    inside_hull_tensor_mask = torch.tensor(points_inside_hull_mask, device='cuda')
-
-    return inside_hull_tensor_mask
-
-def removal_setup(opt, model_path, iteration, views, gaussians, pipeline, background, classifier, selected_obj_ids, cameras_extent, removal_thresh):
-    selected_obj_ids = torch.tensor(selected_obj_ids).cuda()
-    with torch.no_grad():
-        prob_obj3d = gaussians.get_is_masked[..., :1]
+    
+    for iteration in range(1, iterations + 1):
+        viewpoint_stack = views.copy()
+        viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack)-1))
+        render_pkg = render(viewpoint_cam, gaussians, pipe, background)
         
-        mask = prob_obj3d > removal_thresh # reserve the non-masked region
-        mask3d = mask
-        mask3d_convex = points_inside_convex_hull(gaussians._xyz.detach(), mask3d.squeeze(), outlier_factor=1.0)
-        mask3d = torch.logical_or(mask3d, mask3d_convex.unsqueeze(1))
-    
-    # remove & fix gaussians that outside the mask   
-    gaussians.removal_setup(opt,mask3d)
+        image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
+        gt_image = viewpoint_cam.original_image.cuda()
+        
+        # finetune only masked region: 1. LPIPS loss
+        kernel_size = 10
+        image_mask = cv2.dilate(viewpoint_cam.original_image_mask, np.ones((kernel_size, kernel_size), dtype=np.uint8), iterations=1)
+        image_mask_tensor = torch.tensor(image_mask).cuda().repeat(3,1,1)
+        image_m = image * image_mask_tensor
+        gt_image_m = gt_image * image_mask_tensor
+        Ll1 = torch.tensor(0.0).cuda()
+        
+        bbox = mask_to_bbox(image_mask_tensor[0])
+        cropped_image = crop_using_bbox(image, bbox)
+        cropped_gt_image = crop_using_bbox(gt_image, bbox)
+        K = 2
+        rendering_patches = divide_into_patches(cropped_image[None, ...], K)
+        gt_patches = divide_into_patches(cropped_gt_image[None, ...], K)
+        lpips_loss = LPIPS((rendering_patches.squeeze()*2-1), (gt_patches.squeeze()*2-1)).mean()
+        loss = opt.lambda_lpips * lpips_loss
+        # FIXME: 因為mask外可能有一開始撒的intial gaussian, 所以mask外可能也需要finetune. 解法可能是勁量都灑在mask裡面 可以透過remove那時候的3dMask
+        
+        # fintune only masked region: 2. normal/dist regularization
+        lambda_normal = opt.lambda_normal if iteration > 7000 else 0.0
+        lambda_dist = opt.lambda_dist if iteration > 3000 else 0.0
+        rend_dist = render_pkg["rend_dist"]
+        rend_normal  = render_pkg['rend_normal'] * image_mask_tensor
+        surf_normal = render_pkg['surf_normal'] * image_mask_tensor
+        normal_error = (1 - (rend_normal * surf_normal).sum(dim=0))[None]
+        normal_loss = lambda_normal * (normal_error).mean()
+        dist_loss = lambda_dist * (rend_dist).mean()
+        
+        
+        total_loss = loss + dist_loss + normal_loss
+        total_loss.backward()
+        
+        with torch.no_grad():
+            # Densification
+            if iteration < 5000:
+                gaussians.max_radii2D[visibility_filter] = torch.max(gaussians.max_radii2D[visibility_filter], radii[visibility_filter])
+                gaussians.add_densification_stats(viewspace_point_tensor, visibility_filter)
+
+                if iteration % 300 == 0:
+                    size_threshold = 20 if iteration > opt.opacity_reset_interval else None
+                    gaussians.densify_and_prune(opt.densify_grad_threshold, opt.opacity_cull, scene.cameras_extent, size_threshold)
+
+            # Optimizer step
+            if iteration < iterations:
+                gaussians.optimizer.step()
+                gaussians.optimizer.zero_grad(set_to_none = True)
+                
+            if (iteration == iterations):
+                print("\n[ITER {}] Saving Checkpoint".format(iteration))
+                torch.save((gaussians.capture(), iteration), scene.model_path + "/chkpnt" + str(iteration) + "_inpaint.pth")
+        
+        if iteration % 10 == 0:
+            progress_bar.set_postfix({"Loss": f"{loss:.{7}f}"})
+            progress_bar.update(10)
+    progress_bar.close()
     
     # save gaussians
-    point_cloud_path = os.path.join(model_path, "point_cloud/iteration_{}_object_removal".format(iteration))
+    point_cloud_path = os.path.join(model_path, "point_cloud/iteration_{}_object_inpaint".format(iteration))
     gaussians.save_ply(os.path.join(point_cloud_path, "point_cloud.ply"))
 
     return gaussians
 
-def removal(dataset : ModelParams, iteration : int, pipeline : PipelineParams, skip_train : bool, skip_test : bool, opt : OptimizationParams, select_obj_id : int, removal_thresh : float):
+def inpaint(dataset : ModelParams, iteration : int, pipeline : PipelineParams, skip_train : bool, skip_test : bool, opt : OptimizationParams, select_obj_id : int, removal_thresh : float,  finetune_iteration: int):
     # 1. load gaussian checkpoint
     gaussians = GaussianModel(dataset.sh_degree)
     scene = Scene(dataset, gaussians, load_iteration=iteration, shuffle=False)
     bg_color = [1,1,1] if dataset.white_background else [0, 0, 0]
     background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
+    
 
-    # 2. remove selected object
-    gaussians = removal_setup(opt, dataset.model_path, scene.loaded_iter, scene.getTrainCameras(), gaussians, pipeline, background, None, select_obj_id, scene.cameras_extent, removal_thresh)
-    print("Number of gaussians: ", gaussians._xyz.shape[0])
+    # 2. inpaint selected object
+    gaussians = finetune_inpaint(opt, dataset.model_path, scene.loaded_iter, scene.getTrainCameras(), gaussians, pipeline, background, None, select_obj_id, scene.cameras_extent, removal_thresh, finetune_iteration)
     
     # 3. render new result
-    scene = Scene(dataset, gaussians, load_iteration=str(scene.loaded_iter)+'_object_removal', shuffle=False)
+    scene = Scene(dataset, gaussians, load_iteration=str(finetune_iteration)+'_object_inpaint', shuffle=False)
     gaussExtractor = GaussianExtractor(gaussians, render, pipe, bg_color=bg_color)    
     
     train_dir = os.path.join(args.model_path, 'train', "ours_{}".format(scene.loaded_iter))
@@ -158,102 +206,6 @@ def removal(dataset : ModelParams, iteration : int, pipeline : PipelineParams, s
             print("mesh post processed saved at {}".format(os.path.join(train_dir, name.replace('.ply', '_post.ply'))))
 
 
-def finetune_inpaint(opt, model_path, iteration, views, gaussians, pipeline, background, classifier, selected_obj_ids, cameras_extent, removal_thresh, finetune_iteration):
-
-    # get 3d gaussians idx corresponding to select obj id
-    with torch.no_grad():
-        logits3d = classifier(gaussians._objects_dc.permute(2,0,1))
-        prob_obj3d = torch.softmax(logits3d,dim=0)
-        mask = prob_obj3d[selected_obj_ids, :, :] > removal_thresh
-        mask3d = mask.any(dim=0).squeeze()
-
-        mask3d_convex = points_inside_convex_hull(gaussians._xyz.detach(),mask3d,outlier_factor=1.0)
-        mask3d = torch.logical_or(mask3d,mask3d_convex)
-        mask3d = mask3d.float()[:,None,None]
-
-    # fix some gaussians
-    gaussians.inpaint_setup(opt,mask3d)
-    iterations = finetune_iteration
-    progress_bar = tqdm(range(iterations), desc="Finetuning progress")
-    LPIPS = lpips.LPIPS(net='vgg')
-    for param in LPIPS.parameters():
-        param.requires_grad = False
-    LPIPS.cuda()
-
-
-    for iteration in range(iterations):
-        viewpoint_stack = views.copy()
-        viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack)-1))
-        render_pkg = render(viewpoint_cam, gaussians, pipeline, background)
-        image, viewspace_point_tensor, visibility_filter, radii, objects = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"], render_pkg["render_object"]
-
-        mask2d = viewpoint_cam.objects > 128
-        gt_image = viewpoint_cam.original_image.cuda()
-        Ll1 = masked_l1_loss(image, gt_image, ~mask2d)
-
-        bbox = mask_to_bbox(mask2d)
-        cropped_image = crop_using_bbox(image, bbox)
-        cropped_gt_image = crop_using_bbox(gt_image, bbox)
-        K = 2
-        rendering_patches = divide_into_patches(cropped_image[None, ...], K)
-        gt_patches = divide_into_patches(cropped_gt_image[None, ...], K)
-        lpips_loss = LPIPS(rendering_patches.squeeze()*2-1,gt_patches.squeeze()*2-1).mean()
-
-        loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * lpips_loss
-        loss.backward()
-
-        with torch.no_grad():
-            if iteration < 5000 :
-                # Keep track of max radii in image-space for pruning
-                gaussians.max_radii2D[visibility_filter] = torch.max(gaussians.max_radii2D[visibility_filter], radii[visibility_filter])
-                gaussians.add_densification_stats(viewspace_point_tensor, visibility_filter)
-
-                if  iteration % 300 == 0:
-                    size_threshold = 20 
-                    gaussians.densify_and_prune(opt.densify_grad_threshold, 0.005, cameras_extent, size_threshold)
-                
-        gaussians.optimizer.step()
-        gaussians.optimizer.zero_grad(set_to_none = True)
-
-        if iteration % 10 == 0:
-            progress_bar.set_postfix({"Loss": f"{loss:.{7}f}"})
-            progress_bar.update(10)
-    progress_bar.close()
-    
-    # save gaussians
-    point_cloud_path = os.path.join(model_path, "point_cloud_object_inpaint/iteration_{}".format(iteration))
-    gaussians.save_ply(os.path.join(point_cloud_path, "point_cloud.ply"))
-
-    return gaussians
-
-
-def inpaint(dataset : ModelParams, iteration : int, pipeline : PipelineParams, skip_train : bool, skip_test : bool, opt : OptimizationParams, select_obj_id : int, removal_thresh : float,  finetune_iteration: int):
-    # 1. load gaussian checkpoint
-    gaussians = GaussianModel(dataset.sh_degree)
-    scene = Scene(dataset, gaussians, load_iteration=iteration, shuffle=False)
-    num_classes = dataset.num_classes
-    print("Num classes: ",num_classes)
-    classifier = torch.nn.Conv2d(gaussians.num_objects, num_classes, kernel_size=1)
-    classifier.cuda()
-    classifier.load_state_dict(torch.load(os.path.join(dataset.model_path,"point_cloud","iteration_"+str(scene.loaded_iter),"classifier.pth")))
-    bg_color = [1,1,1] if dataset.white_background else [0, 0, 0]
-    background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
-
-    # 2. inpaint selected object
-    gaussians = finetune_inpaint(opt, dataset.model_path, scene.loaded_iter, scene.getTrainCameras(), gaussians, pipeline, background, classifier, select_obj_id, scene.cameras_extent, removal_thresh, finetune_iteration)
-
-    # 3. render new result
-    dataset.object_path = 'object_mask'
-    dataset.images = 'images'
-    scene = Scene(dataset, gaussians, load_iteration='_object_inpaint/iteration_'+str(finetune_iteration-1), shuffle=False)
-    with torch.no_grad():
-        if not skip_train:
-             render_set(dataset.model_path, "train", scene.loaded_iter, scene.getTrainCameras(), gaussians, pipeline, background, classifier)
-
-        if not skip_test:
-             render_set(dataset.model_path, "test", scene.loaded_iter, scene.getTestCameras(), gaussians, pipeline, background, classifier)
-
-
 if __name__ == "__main__":
     # Set up command line argument parser
     parser = ArgumentParser(description="Testing script parameters")
@@ -273,17 +225,20 @@ if __name__ == "__main__":
     parser.add_argument("--unbounded", action="store_true", help='Mesh: using unbounded mode for meshing')
     parser.add_argument("--mesh_res", default=1024, type=int, help='Mesh: resolution for unbounded mesh extraction')
     parser.add_argument("--removal_thresh", default=0.3, type=float, help='Removal: threshold for object removal')
+    parser.add_argument("--finetune_iteration", default=10000, type=int, help='Inpaint: number of finetune iterations')
     args = get_combined_args(parser)
     print("Rendering " + args.model_path)
 
 
     dataset, iteration, pipe = model.extract(args), args.iteration, pipeline.extract(args)
+    
+    iteration = str(iteration) + "_object_removal"
+    
     gaussians = GaussianModel(dataset.sh_degree)
     scene = Scene(dataset, gaussians, load_iteration=iteration, shuffle=False)
     bg_color = [1,1,1] if dataset.white_background else [0, 0, 0]
     background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
     gaussExtractor = GaussianExtractor(gaussians, render, pipe, bg_color=bg_color)    
      
-    # remove the masked area
-    removal(dataset, iteration, pipe, args.skip_train, args.skip_test, opt.extract(args), select_obj_id=0, removal_thresh=args.removal_thresh)
- 
+    # inpaint
+    inpaint(dataset, iteration, pipe, args.skip_train, args.skip_test, opt.extract(args), 0, args.removal_thresh, args.finetune_iteration)

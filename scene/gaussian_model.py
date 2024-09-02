@@ -142,7 +142,7 @@ class GaussianModel:
         dist2 = torch.clamp_min(distCUDA2(torch.from_numpy(np.asarray(pcd.points)).float().cuda()), 0.0000001)
         scales = torch.log(torch.sqrt(dist2))[...,None].repeat(1, 2)
         rots = torch.rand((fused_point_cloud.shape[0], 4), device="cuda")
-        is_masked = torch.rand((fused_point_cloud.shape[0], 1), device="cuda")
+        is_masked = torch.ones((fused_point_cloud.shape[0], 3), device="cuda")
 
         opacities = self.inverse_opacity_activation(0.1 * torch.ones((fused_point_cloud.shape[0], 1), dtype=torch.float, device="cuda"))
 
@@ -200,7 +200,126 @@ class GaussianModel:
         self._scaling = nn.Parameter(set_requires_grad(scaling_sub, False))
         self._rotation = nn.Parameter(set_requires_grad(rotation_sub, False))
         self._is_masked = nn.Parameter(set_requires_grad(is_masked_sub, False))
-    
+
+    def inpaint_setup(self, training_args):
+        from scipy.spatial import KDTree
+        def initialize_new_features(features, num_new_points, mask_xyz_values, distance_threshold=0.25, max_distance_threshold=1, k=5):
+            """Initialize new points for multiple features based on neighbouring points in the remaining area."""
+            new_features = {}
+            
+            if num_new_points == 0:
+                for key in features:
+                    new_features[key] = torch.empty((0, *features[key].shape[1:]), device=features[key].device)
+                return new_features
+
+            # Get remaining points from features
+            remaining_xyz_values = features["xyz"]
+            remaining_xyz_values_np = remaining_xyz_values.cpu().numpy()
+            
+            # Build a KD-Tree for fast nearest-neighbor lookup
+            kdtree = KDTree(remaining_xyz_values_np)
+            
+            # Sample random points from mask_xyz_values as query points
+            mask_xyz_values_np = mask_xyz_values.cpu().numpy()
+            query_points = mask_xyz_values_np
+
+            # Find the k nearest neighbors in the remaining points for each query point
+            distances, indices = kdtree.query(query_points, k=k)
+            selected_indices = indices
+
+            # Initialize new points for each feature
+            for key, feature in features.items():
+                # Convert feature to numpy array
+                feature_np = feature.cpu().numpy()
+                
+                # If we have valid neighbors, calculate the mean of neighbor points
+                if feature_np.ndim == 2:
+                    neighbor_points = feature_np[selected_indices]
+                elif feature_np.ndim == 3:
+                    neighbor_points = feature_np[selected_indices, :, :]
+                else:
+                    raise ValueError(f"Unsupported feature dimension: {feature_np.ndim}")
+                new_points_np = np.mean(neighbor_points, axis=1)
+                
+                # Convert back to tensor
+                new_features[key] = torch.tensor(new_points_np, device=feature.device, dtype=feature.dtype)
+            
+            return new_features['xyz'], new_features['features_dc'], new_features['scaling'], new_features['objects_dc'], new_features['features_rest'], new_features['opacity'], new_features['rotation']
+        
+        def random_initialize_new_features(features, num_new_points):
+            """Initialize new points for multiple features based on random values."""
+            new_features = {}
+            for key in features:
+                if key == 'xyz':
+                    new_features[key] = 2 * torch.rand((num_new_points, *features[key].shape[1:]), device=features[key].device)
+                else:
+                    new_features[key] = torch.rand((num_new_points, *features[key].shape[1:]), device=features[key].device)
+            
+            return new_features['xyz'], new_features['features_dc'], new_features['scaling'], new_features['is_masked'], new_features['features_rest'], new_features['opacity'], new_features['rotation']
+        
+        def initialize_new_features_with_depth(features, num_new_points):
+            """Initialize new points for multiple features based on aligned depth unprojection."""
+            pass
+        
+        
+        # Extracting subsets using the mask
+        xyz_sub = self._xyz.detach()
+        features_dc_sub = self._features_dc.detach()
+        features_rest_sub = self._features_rest.detach()
+        opacity_sub = self._opacity.detach()
+        scaling_sub = self._scaling.detach()
+        rotation_sub = self._rotation.detach()
+        is_masked_sub = self._is_masked.detach()
+
+        # Add new points with random initialization
+        sub_features = {
+            'xyz': xyz_sub,
+            'features_dc': features_dc_sub,
+            'scaling': scaling_sub,
+            'is_masked': is_masked_sub,
+            'features_rest': features_rest_sub,
+            'opacity': opacity_sub,
+            'rotation': rotation_sub,
+        }
+        
+        num_new_points = 4000 # num_new_points = len(mask_xyz_values)
+        with torch.no_grad():
+            new_xyz, new_features_dc, new_scaling, new_is_masked, new_features_rest, new_opacity, new_rotation = random_initialize_new_features(sub_features, num_new_points)
+
+        def set_requires_grad(tensor, requires_grad):
+            """Returns a new tensor with the specified requires_grad setting."""
+            return tensor.detach().clone().requires_grad_(requires_grad)
+
+        # Construct nn.Parameters with specified gradients
+        self._xyz = nn.Parameter(torch.cat([set_requires_grad(xyz_sub, False), set_requires_grad(new_xyz, True)]))
+        self._features_dc = nn.Parameter(torch.cat([set_requires_grad(features_dc_sub, False), set_requires_grad(new_features_dc, True)]))
+        self._features_rest = nn.Parameter(torch.cat([set_requires_grad(features_rest_sub, False), set_requires_grad(new_features_rest, True)]))
+        self._opacity = nn.Parameter(torch.cat([set_requires_grad(opacity_sub, False), set_requires_grad(new_opacity, True)]))
+        self._scaling = nn.Parameter(torch.cat([set_requires_grad(scaling_sub, False), set_requires_grad(new_scaling, True)]))
+        self._rotation = nn.Parameter(torch.cat([set_requires_grad(rotation_sub, False), set_requires_grad(new_rotation, True)]))
+        self._is_masked = nn.Parameter(torch.cat([set_requires_grad(is_masked_sub, False), set_requires_grad(new_is_masked, True)]))
+
+        self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
+        self.percent_dense = training_args.percent_dense
+        self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
+        self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
+
+        l = [
+            {'params': [self._xyz], 'lr': training_args.position_lr_init * self.spatial_lr_scale, "name": "xyz"},
+            {'params': [self._is_masked], 'lr': training_args.is_masked_lr, "name": "is_masked"},
+            {'params': [self._features_dc], 'lr': training_args.feature_lr, "name": "f_dc"},
+            {'params': [self._features_rest], 'lr': training_args.feature_lr / 20.0, "name": "f_rest"},
+            {'params': [self._opacity], 'lr': training_args.opacity_lr, "name": "opacity"},
+            {'params': [self._scaling], 'lr': training_args.scaling_lr, "name": "scaling"},
+            {'params': [self._rotation], 'lr': training_args.rotation_lr, "name": "rotation"}
+        ]
+
+        self.optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15)
+        self.xyz_scheduler_args = get_expon_lr_func(lr_init=training_args.position_lr_init*self.spatial_lr_scale,
+                                                    lr_final=training_args.position_lr_final*self.spatial_lr_scale,
+                                                    lr_delay_mult=training_args.position_lr_delay_mult,
+                                                    max_steps=training_args.position_lr_max_steps)
+
     def update_learning_rate(self, iteration):
         ''' Learning rate scheduling per step '''
         for param_group in self.optimizer.param_groups:
