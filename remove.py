@@ -71,7 +71,8 @@ def points_inside_convex_hull(point_cloud, mask, remove_outliers=True, outlier_f
 def removal_setup(opt, model_path, iteration, views, gaussians, pipeline, background, classifier, selected_obj_ids, cameras_extent, removal_thresh):
     selected_obj_ids = torch.tensor(selected_obj_ids).cuda()
     with torch.no_grad():
-        prob_obj3d = gaussians.get_is_masked 
+        prob_obj3d = gaussians.get_is_masked[..., :1]
+        
         mask = prob_obj3d > removal_thresh # reserve the non-masked region
         mask3d = mask
         mask3d_convex = points_inside_convex_hull(gaussians._xyz.detach(), mask3d.squeeze(), outlier_factor=1.0)

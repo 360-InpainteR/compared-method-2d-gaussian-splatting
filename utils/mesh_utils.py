@@ -19,6 +19,8 @@ from gaussian_renderer import render_mask
 from functools import partial
 import open3d as o3d
 import trimesh
+from utils.warping_utils import unproject, warping
+import torchvision
 
 def post_process_mesh(mesh, cluster_to_keep=1000):
     """
@@ -95,8 +97,9 @@ class GaussianExtractor(object):
         # self.alphamaps = []
         self.rgbmaps = []
         self.maskmaps = []
-        # self.normals = []
-        # self.depth_normals = []
+        self.seenmaps = []
+        self.normals = []
+        self.depth_normals = []
         self.viewpoint_stack = []
 
     @torch.no_grad()
@@ -106,6 +109,13 @@ class GaussianExtractor(object):
         """
         self.clean()
         self.viewpoint_stack = viewpoint_stack
+        
+        # # TODO: Warping
+        # ids = np.random.choice(len(viewpoint_stack), 4)
+        # ref_viewpoint_cams = [viewpoint_stack[i] for i in ids]
+        # ref_viewpoint_cams = [viewpoint_stack[10]]
+        
+        
         for i, viewpoint_cam in tqdm(enumerate(self.viewpoint_stack), desc="reconstruct radiance fields"):
             render_pkg = self.render(viewpoint_cam, self.gaussians)
             # render_pkg = self.render(viewpoint_cam, self.gaussians, optimize_is_masked=True)
@@ -117,20 +127,43 @@ class GaussianExtractor(object):
             depth_normal = render_pkg['surf_normal']
             self.rgbmaps.append(rgb.cpu())
             self.depthmaps.append(depth.cpu())
+            # self.normals.append(normal.cpu())
+            self.depth_normals.append(depth_normal.cpu())
             
             try:
                 render_pkg = self.render_mask(viewpoint_cam, self.gaussians)
-                is_masked = render_pkg['is_masked']
+                is_masked = render_pkg['is_masked'][0][None]
+                seen = render_pkg['is_masked'][1][None]
                 self.maskmaps.append(is_masked.cpu())
-            except:
+                self.seenmaps.append(seen.cpu())
+                
+                # # TODO: Warping
+                # # unrpoject the unseen to 3D space for initialize gaussians
+                # # seen > 0.5 to 1, else 0
+                # seen_01 = (seen > 0.5).float().repeat(3, 1, 1)
+                # # unproject the depth to 3D
+                
+                # for ref_viewpoint_cam in ref_viewpoint_cams:
+                #     render_pkg = self.render(ref_viewpoint_cam, self.gaussians)
+                #     ref_depth = render_pkg['surf_depth']
+                    
+                #     ref_render_pkg = self.render_mask(ref_viewpoint_cam, self.gaussians)
+                #     ref_seen = ref_render_pkg['is_masked'][1][None]
+                #     ref_seen_01 = (ref_seen > 0.5).float().repeat(3, 1, 1)
+                    
+                #     seen_01_warp = warping(ref_viewpoint_cam, viewpoint_cam, ref_seen_01, ref_depth, device='cuda')
+                    
+                    
+                #     torchvision.utils.save_image(seen_01, f"tmp2/{viewpoint_cam.image_name}_seen.png")
+                #     torchvision.utils.save_image(seen_01_warp[:1, :], f"tmp2/{viewpoint_cam.image_name}_seen_warp.png")
+
+            except Exception as e:           
                 pass
-            # self.alphamaps.append(alpha.cpu())
-            # self.normals.append(normal.cpu())
-            # self.depth_normals.append(depth_normal.cpu())
         
         # self.rgbmaps = torch.stack(self.rgbmaps, dim=0)
         # self.depthmaps = torch.stack(self.depthmaps, dim=0)
-        self.maskmaps = torch.stack(self.maskmaps, dim=0)
+        # self.maskmaps = torch.stack(self.maskmaps, dim=0)
+        # self.seenmaps = torch.stack(self.seenmaps, dim=0)
         # self.alphamaps = torch.stack(self.alphamaps, dim=0)
         # self.depth_normals = torch.stack(self.depth_normals, dim=0)
         self.estimate_bounding_sphere()
@@ -296,16 +329,21 @@ class GaussianExtractor(object):
         render_path = os.path.join(path, "renders")
         gts_path = os.path.join(path, "gt")
         vis_path = os.path.join(path, "vis")
-        mask_path = os.path.join(path, "mask")
+        depth_normal_path = os.path.join(path, "depth_normal")
+        mask_path = os.path.join(path, "object_mask")
+        seen_path = os.path.join(path, "seen_mask")
         os.makedirs(render_path, exist_ok=True)
         os.makedirs(vis_path, exist_ok=True)
+        os.makedirs(depth_normal_path, exist_ok=True)
         os.makedirs(gts_path, exist_ok=True)
         os.makedirs(mask_path, exist_ok=True)
+        os.makedirs(seen_path, exist_ok=True)
         for idx, viewpoint_cam in tqdm(enumerate(self.viewpoint_stack), desc="export images"):
             gt = viewpoint_cam.original_image[0:3, :, :]
             save_img_u8(gt.permute(1,2,0).cpu().numpy(), os.path.join(gts_path, '{0:05d}'.format(idx) + ".png"))
             save_img_u8(self.rgbmaps[idx].permute(1,2,0).cpu().numpy(), os.path.join(render_path, '{0:05d}'.format(idx) + ".png"))
             save_img_f32(self.depthmaps[idx][0].cpu().numpy(), os.path.join(vis_path, 'depth_{0:05d}'.format(idx) + ".tiff"))
-            save_gray_img_u8(self.maskmaps[idx][0].cpu().numpy(), os.path.join(mask_path, 'mask_{0:05d}'.format(idx) + ".png"))
+            save_gray_img_u8(self.maskmaps[idx][0].cpu().numpy(), os.path.join(mask_path, '{0:05d}'.format(idx) + ".png"))
+            save_gray_img_u8(self.seenmaps[idx][0].cpu().numpy(), os.path.join(seen_path, '{0:05d}'.format(idx) + ".png"))
             # save_img_u8(self.normals[idx].permute(1,2,0).cpu().numpy() * 0.5 + 0.5, os.path.join(vis_path, 'normal_{0:05d}'.format(idx) + ".png"))
-            # save_img_u8(self.depth_normals[idx].permute(1,2,0).cpu().numpy() * 0.5 + 0.5, os.path.join(vis_path, 'depth_normal_{0:05d}'.format(idx) + ".png"))
+            save_img_u8(self.depth_normals[idx].permute(1,2,0).cpu().numpy() * 0.5 + 0.5, os.path.join(depth_normal_path, '{0:05d}'.format(idx) + ".png"))

@@ -227,18 +227,20 @@ def create_videos(base_dir, input_dir, out_name, num_frames=480):
       'crf': 18,
   }
   
-  for k in ['mask', 'depth', 'normal', 'color']:
+  for k in ['object_mask', 'depth', 'normal', 'color', 'depth_normal']:
     video_file = os.path.join(base_dir, f'{video_prefix}_{k}.mp4')
     input_format = 'gray' if k == 'alpha' else 'rgb'
     
 
-    file_ext = 'png' if k in ['color', 'normal', 'mask'] else 'tiff'
+    file_ext = 'png' if k in ['color', 'normal', 'object_mask', 'depth_normal'] else 'tiff'
     idx = 0
 
     if k == 'color':
       file0 = os.path.join(input_dir, 'renders', f'{idx_to_str(0)}.{file_ext}')
-    elif k == 'mask':
-      file0 = os.path.join(input_dir, 'mask', f'{k}_{idx_to_str(0)}.{file_ext}')
+    elif k == 'object_mask':
+      file0 = os.path.join(input_dir, 'object_mask', f'{k}_{idx_to_str(0)}.{file_ext}')
+    elif k == 'depth_normal':
+      file0 = os.path.join(input_dir, 'depth_normal', f'{idx_to_str(0)}.{file_ext}')
     else:
       file0 = os.path.join(input_dir, 'vis', f'{k}_{idx_to_str(0)}.{file_ext}')
 
@@ -252,15 +254,17 @@ def create_videos(base_dir, input_dir, out_name, num_frames=480):
         # img_file = os.path.join(input_dir, f'{k}_{idx_to_str(idx)}.{file_ext}')
         if k == 'color':
           img_file = os.path.join(input_dir, 'renders', f'{idx_to_str(idx)}.{file_ext}')
-        elif k == 'mask':
-          img_file = os.path.join(input_dir, 'mask', f'mask_{idx_to_str(idx)}.{file_ext}')
+        elif k == 'object_mask':
+          img_file = os.path.join(input_dir, 'object_mask', f'object_mask_{idx_to_str(idx)}.{file_ext}')
+        elif k == 'depth_normal':
+          img_file = os.path.join(input_dir, 'depth_normal', f'{idx_to_str(idx)}.{file_ext}')
         else:
           img_file = os.path.join(input_dir, 'vis', f'{k}_{idx_to_str(idx)}.{file_ext}')
 
         if not os.path.exists(img_file):
           ValueError(f'Image file {img_file} does not exist.')
         img = load_img(img_file)
-        if k in ['color', 'normal', 'mask']:
+        if k in ['color', 'normal', 'object_mask', 'depth_normal']:
           img = img / 255.
         elif k.startswith('depth'):
           img = render_dist_curve_fn(img)
@@ -278,6 +282,12 @@ def save_img_u8(img, pth):
         (np.clip(np.nan_to_num(img), 0., 1.) * 255.).astype(np.uint8)).save(
             f, 'PNG')
 
+def save_gray_img_u8(img, pth):
+  """Save an image (probably RGB) in [0, 1] to disk as a uint8 PNG."""
+  with open(pth, 'wb') as f:
+    Image.fromarray(
+        (np.clip(np.nan_to_num(img), 0., 1.) * 255.).astype(np.uint8)).save(
+            f, 'PNG')
 
 def save_img_f32(depthmap, pth):
   """Save an image (probably a depthmap) to disk as a float32 TIFF."""
