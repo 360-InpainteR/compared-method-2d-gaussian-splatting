@@ -142,7 +142,7 @@ class GaussianModel:
         dist2 = torch.clamp_min(distCUDA2(torch.from_numpy(np.asarray(pcd.points)).float().cuda()), 0.0000001)
         scales = torch.log(torch.sqrt(dist2))[...,None].repeat(1, 2)
         rots = torch.rand((fused_point_cloud.shape[0], 4), device="cuda")
-        is_masked = torch.ones((fused_point_cloud.shape[0], 3), device="cuda")
+        is_masked = torch.zeros((fused_point_cloud.shape[0], 3), device="cuda")
 
         opacities = self.inverse_opacity_activation(0.1 * torch.ones((fused_point_cloud.shape[0], 1), dtype=torch.float, device="cuda"))
 
@@ -201,7 +201,7 @@ class GaussianModel:
         self._rotation = nn.Parameter(set_requires_grad(rotation_sub, False))
         self._is_masked = nn.Parameter(set_requires_grad(is_masked_sub, False))
 
-    def inpaint_setup(self, training_args):
+    def inpaint_setup(self, training_args, initial_gs_xyz, initial_gs_rgb):
         from scipy.spatial import KDTree
         def initialize_new_features(features, num_new_points, mask_xyz_values, distance_threshold=0.25, max_distance_threshold=1, k=5):
             """Initialize new points for multiple features based on neighbouring points in the remaining area."""
@@ -257,9 +257,36 @@ class GaussianModel:
             
             return new_features['xyz'], new_features['features_dc'], new_features['scaling'], new_features['is_masked'], new_features['features_rest'], new_features['opacity'], new_features['rotation']
         
-        def initialize_new_features_with_depth(features, num_new_points):
+        def initialize_new_features_with_initial_gs(original_features, initial_gs_xyz, initial_gs_rgb):
             """Initialize new points for multiple features based on aligned depth unprojection."""
-            pass
+            fused_color = RGB2SH(initial_gs_rgb)
+            features = torch.zeros((fused_color.shape[0], 3, (self.max_sh_degree + 1) ** 2)).float().cuda()
+            features[:, :3, 0 ] = fused_color
+            features[:, 3:, 1:] = 0.0
+            
+            dist2 = torch.clamp_min(distCUDA2(initial_gs_xyz), 0.0000001)
+            # dist2 = torch.clamp_max(dist2)
+            scales = torch.log(torch.sqrt(dist2))[...,None].repeat(1, 2)
+            rots = torch.rand((initial_gs_xyz.shape[0], 4), device="cuda")
+            is_masked = torch.rand((initial_gs_xyz.shape[0], 3), device="cuda")
+            opacities = self.inverse_opacity_activation(0.1 * torch.ones((initial_gs_xyz.shape[0], 1), dtype=torch.float, device="cuda"))
+            
+            print("Number of points at initialisation : ", initial_gs_xyz.shape[0])
+
+            new_features = {}
+            new_features['xyz'] = initial_gs_xyz
+            new_features['features_dc'] = features[:,:,0:1].transpose(1, 2).contiguous()
+            new_features['features_rest'] = features[:,:,1:].transpose(1, 2).contiguous()
+            new_features['scaling'] = scales
+            # new_features['scaling'] = 10.0 * torch.ones((initial_gs_xyz.shape[0], *original_features['scaling'].shape[1:]), device=original_features['scaling'].device)
+            new_features['rotation'] = rots
+            new_features['opacity'] = opacities
+            # new_features['opacity'] = 1.0 * torch.ones((initial_gs_xyz.shape[0], *original_features['opacity'].shape[1:]), device=original_features['opacity'].device)
+            
+            new_features['is_masked'] = is_masked
+            
+            return new_features['xyz'], new_features['features_dc'], new_features['scaling'], new_features['is_masked'], new_features['features_rest'], new_features['opacity'], new_features['rotation']
+         
         
         
         # Extracting subsets using the mask
@@ -284,8 +311,11 @@ class GaussianModel:
         
         num_new_points = 4000 # num_new_points = len(mask_xyz_values)
         with torch.no_grad():
-            new_xyz, new_features_dc, new_scaling, new_is_masked, new_features_rest, new_opacity, new_rotation = random_initialize_new_features(sub_features, num_new_points)
-
+            if initial_gs_xyz is None:
+                 new_xyz, new_features_dc, new_scaling, new_is_masked, new_features_rest, new_opacity, new_rotation = random_initialize_new_features(sub_features, num_new_points)
+            else:
+                new_xyz, new_features_dc, new_scaling, new_is_masked, new_features_rest, new_opacity, new_rotation = initialize_new_features_with_initial_gs(sub_features, initial_gs_xyz, initial_gs_rgb)
+ 
         def set_requires_grad(tensor, requires_grad):
             """Returns a new tensor with the specified requires_grad setting."""
             return tensor.detach().clone().requires_grad_(requires_grad)
@@ -319,6 +349,27 @@ class GaussianModel:
                                                     lr_final=training_args.position_lr_final*self.spatial_lr_scale,
                                                     lr_delay_mult=training_args.position_lr_delay_mult,
                                                     max_steps=training_args.position_lr_max_steps)
+
+    def stop_grad(self, no_grad_part_length):
+        xyz_sub = self._xyz[:no_grad_part_length].detach()
+        features_dc_sub = self._features_dc[:no_grad_part_length].detach()
+        features_rest_sub = self._features_rest[:no_grad_part_length].detach()
+        opacity_sub = self._opacity[:no_grad_part_length].detach()
+        scaling_sub = self._scaling[:no_grad_part_length].detach()
+        rotation_sub = self._rotation[:no_grad_part_length].detach()
+        is_masked_sub = self._is_masked[:no_grad_part_length].detach()
+        
+        new_xyz = self._xyz[no_grad_part_length:]
+        new_features_dc = self._features_dc[no_grad_part_length:]
+        new_features_rest = self._features_rest[no_grad_part_length:]
+        new_opacity = self._opacity[no_grad_part_length:]
+        new_scaling = self._scaling[no_grad_part_length:]
+        new_rotation = self._rotation[no_grad_part_length:]
+        
+        
+        
+        
+        
 
     def update_learning_rate(self, iteration):
         ''' Learning rate scheduling per step '''

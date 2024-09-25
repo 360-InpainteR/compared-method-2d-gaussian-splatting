@@ -9,11 +9,14 @@
 # For inquiries contact  george.drettakis@inria.fr
 #
 
-import torch
+import random
 import sys
 from datetime import datetime
+
+import matplotlib.cm as cm
 import numpy as np
-import random
+import torch
+
 
 def inverse_sigmoid(x):
     return torch.log(x/(1-x))
@@ -175,3 +178,41 @@ def colormap(img, cmap='jet'):
     img = torch.from_numpy(data / 255.).float().permute(2,0,1)
     plt.close()
     return img
+
+# source: https://github.com/VITA-Group/FSGS/blob/main/utils/general_utils.py#L157
+def weighted_percentile(x, w, ps, assume_sorted=False):
+    """Compute the weighted percentile(s) of a single vector."""
+    x = x.reshape([-1])
+    w = w.reshape([-1])
+    if not assume_sorted:
+        sortidx = np.argsort(x)
+        x, w = x[sortidx], w[sortidx]
+    acc_w = np.cumsum(w)
+    return np.interp(np.array(ps) * (acc_w[-1] / 100), acc_w, x)
+
+# source: https://github.com/VITA-Group/FSGS/blob/main/utils/general_utils.py#L157
+def vis_depth(depth):
+    """Visualize the depth map with colormap.
+       Rescales the values so that depth_min and depth_max map to 0 and 1,
+       respectively.
+    """
+    percentile = 99
+    eps = 1e-10
+
+    lo_auto, hi_auto = weighted_percentile(
+        depth, np.ones_like(depth), [50 - percentile / 2, 50 + percentile / 2])
+    lo = None or (lo_auto - eps)
+    hi = None or (hi_auto + eps)
+    curve_fn = lambda x: 1/x + eps
+
+    depth, lo, hi = [curve_fn(x) for x in [depth, lo, hi]]
+    depth = np.nan_to_num(
+            np.clip((depth - np.minimum(lo, hi)) / np.abs(hi - lo), 0, 1))
+    colorized = cm.get_cmap('turbo')(depth)[:, :, :3]
+
+    return np.uint8(colorized[..., ::-1] * 255)
+
+# source: https://github.com/VITA-Group/FSGS/blob/main/utils/general_utils.py#L157
+def chamfer_dist(array1, array2):
+    dist = torch.norm(array1[None] - array2[:, None], 2, dim=-1)
+    return dist.min(1)[0]
