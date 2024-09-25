@@ -98,12 +98,13 @@ class GaussianExtractor(object):
         self.rgbmaps = []
         self.maskmaps = []
         self.seenmaps = []
+        self.unseenmaps = []
         self.normals = []
         self.depth_normals = []
         self.viewpoint_stack = []
 
     @torch.no_grad()
-    def reconstruction(self, viewpoint_stack):
+    def reconstruction(self, viewpoint_stack, gen_unseen_mask=False):
         """
         reconstruct radiance field given cameras
         """
@@ -129,6 +130,45 @@ class GaussianExtractor(object):
             self.depthmaps.append(depth.cpu())
             # self.normals.append(normal.cpu())
             self.depth_normals.append(depth_normal.cpu())
+            
+            if gen_unseen_mask:
+                # TODO: generate unseen mask
+                object_mask = torch.tensor(viewpoint_cam.original_image_mask, dtype=torch.float).cuda()
+                object_mask = object_mask.repeat(3, 1, 1)
+                unseen_mask_final = torch.zeros_like(object_mask)
+                unseen_mask = torch.zeros_like(object_mask)
+                ref_viewpoint_cams = [viewpoint_stack[id] for id in range(len(viewpoint_stack)) if id != i]
+                for ref_viewpoint_cam in ref_viewpoint_cams:
+                    # render_pkg = render(ref_viewpoint_cam, gaussians)
+                    # ref_depth = render_pkg['surf_depth']
+                    ref_object_mask = torch.tensor(ref_viewpoint_cam.original_image_mask, dtype=torch.float).cuda()    
+                    # ref_object_mask = ref_object_mask.repeat(3, 1, 1)
+                    ref_object_mask_warp, original_indices, ref_indices = warping(viewpoint_cam, ref_viewpoint_cam, object_mask, depth, device='cuda')
+                    
+                    AND_ref = ref_object_mask * ref_object_mask_warp[:1, :]
+                    # original_ref_object_mask = object_mask.clone()
+                    unseen_mask[:, original_indices[:, 0], original_indices[:, 1]] = AND_ref[:, ref_indices[:, 0], ref_indices[:, 1]]
+                    unseen_mask = unseen_mask * object_mask
+                    unseen_mask_final += unseen_mask
+                    
+                    # torchvision.utils.save_image(object_mask, f"tmp3/a_object_mask.png")
+                    # torchvision.utils.save_image(ref_object_mask, f"tmp3/a_ref_object_mask.png")
+                    # torchvision.utils.save_image(ref_object_mask_warp[:1, :], "tmp3/a_ref_vierw_object_mask_warp.png")
+                    # torchvision.utils.save_image(unseen_mask[:1, :], "tmp3/a_unseen_mask.png")
+                    
+                    
+                unseen_mask_final = unseen_mask_final / len(ref_viewpoint_cams)
+                
+                # Thresholding
+                # thr = 0.3
+                # unseen_mask_final[unseen_mask_final > thr] = 1
+                # unseen_mask_final[unseen_mask_final <= thr] = 0
+                
+                torchvision.utils.save_image(object_mask, f"tmp3/a_object_mask.png")
+                torchvision.utils.save_image(unseen_mask_final[:1, :], "tmp3/a_unseen_mask_final.png")
+                self.unseenmaps.append(unseen_mask_final[:1, :].cpu())
+                breakpoint()
+            
             
             try:
                 render_pkg = self.render_mask(viewpoint_cam, self.gaussians)
@@ -167,6 +207,8 @@ class GaussianExtractor(object):
         # self.alphamaps = torch.stack(self.alphamaps, dim=0)
         # self.depth_normals = torch.stack(self.depth_normals, dim=0)
         self.estimate_bounding_sphere()
+
+    
 
     def estimate_bounding_sphere(self):
         """
@@ -332,12 +374,14 @@ class GaussianExtractor(object):
         depth_normal_path = os.path.join(path, "depth_normal")
         mask_path = os.path.join(path, "object_mask")
         seen_path = os.path.join(path, "seen_mask")
+        unseen_path = os.path.join(path, "unseen_mask")
         os.makedirs(render_path, exist_ok=True)
         os.makedirs(vis_path, exist_ok=True)
         os.makedirs(depth_normal_path, exist_ok=True)
         os.makedirs(gts_path, exist_ok=True)
         os.makedirs(mask_path, exist_ok=True)
         os.makedirs(seen_path, exist_ok=True)
+        os.makedirs(unseen_path, exist_ok=True)
         for idx, viewpoint_cam in tqdm(enumerate(self.viewpoint_stack), desc="export images"):
             gt = viewpoint_cam.original_image[0:3, :, :]
             save_img_u8(gt.permute(1,2,0).cpu().numpy(), os.path.join(gts_path, '{0:05d}'.format(idx) + ".png"))
@@ -347,3 +391,4 @@ class GaussianExtractor(object):
             save_gray_img_u8(self.seenmaps[idx][0].cpu().numpy(), os.path.join(seen_path, '{0:05d}'.format(idx) + ".png"))
             # save_img_u8(self.normals[idx].permute(1,2,0).cpu().numpy() * 0.5 + 0.5, os.path.join(vis_path, 'normal_{0:05d}'.format(idx) + ".png"))
             save_img_u8(self.depth_normals[idx].permute(1,2,0).cpu().numpy() * 0.5 + 0.5, os.path.join(depth_normal_path, '{0:05d}'.format(idx) + ".png"))
+            save_gray_img_u8(self.unseenmaps[idx][0].cpu().numpy(), os.path.join(unseen_path, '{0:05d}'.format(idx) + ".png"))

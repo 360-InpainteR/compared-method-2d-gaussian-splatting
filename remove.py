@@ -26,6 +26,7 @@ from scene import Scene
 from utils.general_utils import safe_state
 from utils.mesh_utils import GaussianExtractor, post_process_mesh, to_cam_open3d
 from utils.render_utils import create_videos, generate_path
+from utils.warping_utils import warping
 
 
 def points_inside_convex_hull(point_cloud, mask, remove_outliers=True, outlier_factor=1.0):
@@ -88,8 +89,10 @@ def removal_setup(opt, model_path, iteration, views, gaussians, pipeline, backgr
     return gaussians
 
 def removal(dataset : ModelParams, iteration : int, pipeline : PipelineParams, skip_train : bool, skip_test : bool, opt : OptimizationParams, select_obj_id : int, removal_thresh : float):
-    # 1. load gaussian checkpoint
+# 1. load gaussian checkpoint
     gaussians = GaussianModel(dataset.sh_degree)
+    dataset.stage = 'removal'
+    
     scene = Scene(dataset, gaussians, load_iteration=iteration, shuffle=False)
     bg_color = [1,1,1] if dataset.white_background else [0, 0, 0]
     background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
@@ -97,6 +100,52 @@ def removal(dataset : ModelParams, iteration : int, pipeline : PipelineParams, s
     # 2. remove selected object
     gaussians = removal_setup(opt, dataset.model_path, scene.loaded_iter, scene.getTrainCameras(), gaussians, pipeline, background, None, select_obj_id, scene.cameras_extent, removal_thresh)
     print("Number of gaussians: ", gaussians._xyz.shape[0])
+    
+    
+    # # TODO: generate unseen mask
+    # with torch.no_grad():
+    #     viewpoint_stack = scene.getTrainCameras().copy()
+    #     for i, viewpoint_cam in tqdm(enumerate(viewpoint_stack), desc="Generateing unseen mask", total=len(viewpoint_stack)):
+    #         object_mask = torch.tensor(viewpoint_cam.original_image_mask, dtype=torch.float).cuda()
+    #         object_mask = object_mask.repeat(3, 1, 1)
+    #         depth = render(viewpoint_cam, gaussians, pipe=pipe, bg_color=background)['surf_depth'] 
+            
+            
+            
+    #         # pool = [id for id in range(len(viewpoint_stack)) if id != i]
+    #         # ids = np.random.choice(pool, 10, replace=False)
+    #         # ref_viewpoint_cams = [viewpoint_stack[id] for id in ids]
+    #         unseen_mask_final = torch.zeros_like(object_mask)
+    #         unseen_mask = torch.zeros_like(object_mask)
+    #         ref_viewpoint_cams = [viewpoint_stack[id] for id in range(len(viewpoint_stack)) if id != i]
+    #         for ref_viewpoint_cam in ref_viewpoint_cams:
+    #             # render_pkg = render(ref_viewpoint_cam, gaussians)
+    #             # ref_depth = render_pkg['surf_depth']
+    #             ref_object_mask = torch.tensor(ref_viewpoint_cam.original_image_mask, dtype=torch.float).cuda()    
+    #             # ref_object_mask = ref_object_mask.repeat(3, 1, 1)
+    #             ref_object_mask_warp, original_indices, ref_indices = warping(viewpoint_cam, ref_viewpoint_cam, object_mask, depth, device='cuda')
+                
+    #             AND_ref = ref_object_mask * ref_object_mask_warp[:1, :]
+    #             # original_ref_object_mask = object_mask.clone()
+    #             unseen_mask[:, original_indices[:, 0], original_indices[:, 1]] = AND_ref[:, ref_indices[:, 0], ref_indices[:, 1]]
+    #             unseen_mask = unseen_mask * object_mask
+    #             unseen_mask_final += unseen_mask
+    #             # torchvision.utils.save_image(object_mask, f"tmp3/a_object_mask.png")
+    #             # torchvision.utils.save_image(ref_object_mask, f"tmp3/a_ref_object_mask.png")
+    #             # torchvision.utils.save_image(ref_object_mask_warp[:1, :], "tmp3/a_ref_vierw_object_mask_warp.png")
+    #             # torchvision.utils.save_image(unseen_mask[:1, :], "tmp3/a_unseen_mask.png")
+                
+                
+    #         unseen_mask_final = unseen_mask_final / len(ref_viewpoint_cams)
+    #         thr = 0.3
+    #         unseen_mask_final[unseen_mask_final > thr] = 1
+    #         unseen_mask_final[unseen_mask_final <= thr] = 0
+    #         torchvision.utils.save_image(object_mask, f"tmp3/a_object_mask.png")
+    #         torchvision.utils.save_image(unseen_mask_final[:1, :], "tmp3/a_unseen_mask_final.png")
+    #         breakpoint()
+    
+
+    
     
     # 3. render new result
     scene = Scene(dataset, gaussians, load_iteration=str(scene.loaded_iter)+'_object_removal', shuffle=False)
@@ -109,7 +158,7 @@ def removal(dataset : ModelParams, iteration : int, pipeline : PipelineParams, s
         if not skip_train:
             print("export removal training images ...")
             os.makedirs(train_dir, exist_ok=True)
-            gaussExtractor.reconstruction(scene.getTrainCameras())
+            gaussExtractor.reconstruction(scene.getTrainCameras(), gen_unseen_mask=True)
             gaussExtractor.export_image(train_dir)
              
             # render_set(dataset.model_path, "train", scene.loaded_iter, scene.getTrainCameras(), gaussians, pipeline, background, classifier)
@@ -117,7 +166,7 @@ def removal(dataset : ModelParams, iteration : int, pipeline : PipelineParams, s
         if not skip_test and (len(scene.getTestCameras()) > 0):
             print("export removal rendered testing images ...")
             os.makedirs(test_dir, exist_ok=True)
-            gaussExtractor.reconstruction(scene.getTestCameras())
+            gaussExtractor.reconstruction(scene.getTestCameras(), gen_unseen_mask=True)
             gaussExtractor.export_image(test_dir)
             
         if args.render_path:
@@ -126,7 +175,7 @@ def removal(dataset : ModelParams, iteration : int, pipeline : PipelineParams, s
             os.makedirs(traj_dir, exist_ok=True)
             n_fames = 240
             cam_traj = generate_path(scene.getTrainCameras(), n_frames=n_fames)
-            gaussExtractor.reconstruction(cam_traj)
+            gaussExtractor.reconstruction(cam_traj, gen_unseen_mask=True)
             gaussExtractor.export_image(traj_dir)
             create_videos(base_dir=traj_dir,
                         input_dir=traj_dir, 
@@ -181,11 +230,11 @@ if __name__ == "__main__":
 
 
     dataset, iteration, pipe = model.extract(args), args.iteration, pipeline.extract(args)
-    gaussians = GaussianModel(dataset.sh_degree)
-    scene = Scene(dataset, gaussians, load_iteration=iteration, shuffle=False)
-    bg_color = [1,1,1] if dataset.white_background else [0, 0, 0]
-    background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
-    gaussExtractor = GaussianExtractor(gaussians, render, pipe, bg_color=bg_color)    
+    # gaussians = GaussianModel(dataset.sh_degree)
+    # scene = Scene(dataset, gaussians, load_iteration=iteration, shuffle=False)
+    # bg_color = [1,1,1] if dataset.white_background else [0, 0, 0]
+    # background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
+    # gaussExtractor = GaussianExtractor(gaussians, render, pipe, bg_color=bg_color)    
      
     # remove the masked area
     removal(dataset, iteration, pipe, args.skip_train, args.skip_test, opt.extract(args), select_obj_id=0, removal_thresh=args.removal_thresh)
