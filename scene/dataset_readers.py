@@ -66,7 +66,7 @@ def getNerfppNorm(cam_info):
 
     return {"translate": translate, "radius": radius}
 
-def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder, is_finetune):
+def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder, stage):
     cam_infos = []
     for idx, key in enumerate(cam_extrinsics):
         sys.stdout.write('\r')
@@ -100,10 +100,16 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder, is_finetune
         # read object mask
         # modify /sge to /inpaint_2d_unseen_mask in finetune mode
         image_extensions = ['.jpg', '.JPG', '.png', '.PNG']
-        if is_finetune:
+        if stage == 'inpaint':
+            # image_base_path = os.path.join(os.path.dirname(images_folder)+'/inpaint_2d_unseen_mask_great', os.path.splitext(os.path.basename(extr.name))[0])
             image_base_path = os.path.join(os.path.dirname(images_folder)+'/inpaint_2d_unseen_mask', os.path.splitext(os.path.basename(extr.name))[0])
-        else:
+            # image_base_path = os.path.join(os.path.dirname(images_folder)+'/inpaint_2d_unseen_mask', f"{idx:05d}")
+        elif stage == 'train':
             image_base_path = os.path.join(os.path.dirname(images_folder)+'/seg', os.path.splitext(os.path.basename(extr.name))[0])
+        elif stage == 'removal':
+            image_base_path = os.path.join(os.path.dirname(images_folder)+'/seg', os.path.splitext(os.path.basename(extr.name))[0])
+        else:
+            raise ValueError(f"stage {stage} not supported")
         
         for ext in image_extensions:
             if os.path.exists(image_base_path + ext):
@@ -144,7 +150,7 @@ def storePly(path, xyz, rgb):
     ply_data = PlyData([vertex_element])
     ply_data.write(path)
 
-def readColmapSceneInfo(path, images, eval, llffhold=8, is_finetune=False):
+def readColmapSceneInfo(path, images, eval, llffhold=8, stage="train"):
     try:
         cameras_extrinsic_file = os.path.join(path, "sparse/0", "images.bin")
         cameras_intrinsic_file = os.path.join(path, "sparse/0", "cameras.bin")
@@ -157,7 +163,7 @@ def readColmapSceneInfo(path, images, eval, llffhold=8, is_finetune=False):
         cam_intrinsics = read_intrinsics_text(cameras_intrinsic_file)
 
     reading_dir = "images" if images == None else images
-    cam_infos_unsorted = readColmapCameras(cam_extrinsics=cam_extrinsics, cam_intrinsics=cam_intrinsics, images_folder=os.path.join(path, reading_dir), is_finetune=is_finetune)
+    cam_infos_unsorted = readColmapCameras(cam_extrinsics=cam_extrinsics, cam_intrinsics=cam_intrinsics, images_folder=os.path.join(path, reading_dir), stage=stage)
     cam_infos = sorted(cam_infos_unsorted.copy(), key = lambda x : x.image_name)
 
     if eval:

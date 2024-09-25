@@ -56,6 +56,7 @@ class ModelParams(ParamGroup):
         self.eval = False
         self.render_items = ['RGB', 'Alpha', 'Normal', 'Depth', 'Edge', 'Curvature']
         self.is_finetune = False
+        self.stage = 'train'
         super().__init__(parser, "Loading Parameters", sentinel)
 
     def extract(self, args):
@@ -69,6 +70,7 @@ class PipelineParams(ParamGroup):
         self.compute_cov3D_python = False
         self.depth_ratio = 0.0
         self.debug = False
+        self.exp = ""
         super().__init__(parser, "Pipeline Parameters")
 
 class OptimizationParams(ParamGroup):
@@ -78,7 +80,7 @@ class OptimizationParams(ParamGroup):
         self.position_lr_final = 0.0000016
         self.position_lr_delay_mult = 0.01
         self.position_lr_max_steps = 30_000
-        self.is_masked_lr = 0.01
+        
         self.feature_lr = 0.0025
         self.opacity_lr = 0.05
         self.scaling_lr = 0.005
@@ -95,7 +97,16 @@ class OptimizationParams(ParamGroup):
         self.densify_from_iter = 500
         self.densify_until_iter = 15_000
         self.densify_grad_threshold = 0.0002
+        
+        # For is_masked, is_seen, uncertainty
         self.optimize_is_masked_iter = 0
+        self.optimize_is_seen_iter = 25000
+        self.is_masked_lr = 0.01
+        self.is_seen_lr = 0.1
+        self.is_seen_mean_lr = 0.01 # loss for overall is_seen (want 'is_seen' only on surface)
+        self.is_masked_3d_lr = 0.01
+        
+        # For object removal
         
         
         # sds loss

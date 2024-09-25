@@ -235,17 +235,16 @@ def render_mask(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Ten
     else:
         colors_precomp = override_color
     
-    # expand is_masked to 3 dims, and input to colors_precomp
+    # The is_masked has 3 dim: [is_masked, is_seen, uncertainty]
     is_masked = pc.get_is_masked
-    is_masked = is_masked.expand(-1, 3)
     is_masked_image, radii, allmap = rasterizer(
-        means3D = means3D,
-        means2D = means2D,
+        means3D = means3D.detach(),
+        means2D = means2D.detach(),
         shs = None,
         colors_precomp = is_masked,
-        opacities = opacity,
-        scales = scales,
-        rotations = rotations,
+        opacities = opacity.detach(),
+        scales = scales.detach(),
+        rotations = rotations.detach(),
         cov3D_precomp = cov3D_precomp
     )
     
