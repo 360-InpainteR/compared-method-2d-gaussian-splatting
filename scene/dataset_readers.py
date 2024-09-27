@@ -3,7 +3,7 @@
 # GRAPHDECO research group, https://team.inria.fr/graphdeco
 # All rights reserved.
 #
-# This software is free for non-commercial, research and evaluation use 
+# This software is free for non-commercial, research and evaluation use
 # under the terms of the LICENSE.md file.
 #
 # For inquiries contact  george.drettakis@inria.fr
@@ -71,7 +71,11 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder, stage):
     for idx, key in enumerate(cam_extrinsics):
         sys.stdout.write('\r')
         # the exact output you're looking for:
-        sys.stdout.write("Reading camera {}/{}".format(idx+1, len(cam_extrinsics)))
+        sys.stdout.write(
+            "Reading camera {} - extrinsics {}, cam count {}".format(
+                idx + 1, len(cam_extrinsics), len(cam_infos)
+            )
+        )
         sys.stdout.flush()
 
         extr = cam_extrinsics[key]
@@ -95,6 +99,11 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder, stage):
         else:
             assert False, "Colmap camera model not handled: only undistorted datasets (PINHOLE or SIMPLE_PINHOLE cameras) supported!"
         image_path = os.path.join(images_folder, os.path.basename(extr.name))
+
+        # check if image exists
+        if not os.path.exists(image_path):
+            continue
+
         image_name = os.path.basename(image_path).split(".")[0]
         image = Image.open(image_path)
         # read object mask
@@ -105,19 +114,32 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder, stage):
             image_base_path = os.path.join(os.path.dirname(images_folder)+'/inpaint_2d_unseen_mask', os.path.splitext(os.path.basename(extr.name))[0])
             # image_base_path = os.path.join(os.path.dirname(images_folder)+'/inpaint_2d_unseen_mask', f"{idx:05d}")
         elif stage == 'train':
-            image_base_path = os.path.join(os.path.dirname(images_folder)+'/seg', os.path.splitext(os.path.basename(extr.name))[0])
+            image_base_path = os.path.join(
+                os.path.dirname(images_folder) + "/object_masks",
+                os.path.splitext(os.path.basename(extr.name))[0],
+            )
         elif stage == 'removal':
-            image_base_path = os.path.join(os.path.dirname(images_folder)+'/seg', os.path.splitext(os.path.basename(extr.name))[0])
+            image_base_path = os.path.join(
+                os.path.dirname(images_folder) + "/object_masks",
+                os.path.splitext(os.path.basename(extr.name))[0],
+            )
         else:
             raise ValueError(f"stage {stage} not supported")
-        
+
+        image_mask = None
+        image_mask_path = None
         for ext in image_extensions:
             if os.path.exists(image_base_path + ext):
                 image_mask_path = image_base_path + ext
                 break
-        image_mask=np.array(Image.open(image_mask_path).convert("L"))
-        mask_array = np.where(image_mask >127, 1, 0)
-        image_mask = Image.fromarray((mask_array*255).astype(np.uint8))
+
+        image_mask = np.array(Image.open(image_mask_path).convert("L"))
+        mask_array = np.where(image_mask > 127, 1, 0)
+        image_mask = Image.fromarray((mask_array * 255).astype(np.uint8))
+
+        # resize mask to image size if needed
+        if image_mask.size != image.size:
+            image_mask = image_mask.resize(image.size, Image.ANTIALIAS)
 
         cam_info = CameraInfo(uid=uid, R=R, T=T, FovY=FovY, FovX=FovX, image=image, image_mask=image_mask,
                               image_path=image_path, image_name=image_name, width=width, height=height)
