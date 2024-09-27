@@ -66,15 +66,18 @@ def getNerfppNorm(cam_info):
 
     return {"translate": translate, "radius": radius}
 
-def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder, stage):
-    cam_infos = []
+
+def readColmapCameras(
+    cam_extrinsics, cam_intrinsics, images_folder, stage, test_images_folder
+):
+    train_cam_infos = []
+    test_cam_infos = []
+
     for idx, key in enumerate(cam_extrinsics):
         sys.stdout.write('\r')
         # the exact output you're looking for:
         sys.stdout.write(
-            "Reading camera {} - extrinsics {}, cam count {}".format(
-                idx + 1, len(cam_extrinsics), len(cam_infos)
-            )
+            "Reading camera {} - extrinsics {}".format(idx + 1, len(cam_extrinsics))
         )
         sys.stdout.flush()
 
@@ -97,55 +100,92 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder, stage):
             FovY = focal2fov(focal_length_y, height)
             FovX = focal2fov(focal_length_x, width)
         else:
-            assert False, "Colmap camera model not handled: only undistorted datasets (PINHOLE or SIMPLE_PINHOLE cameras) supported!"
-        image_path = os.path.join(images_folder, os.path.basename(extr.name))
+            assert (
+                False
+            ), "Colmap camera model not handled: only undistorted datasets (PINHOLE or SIMPLE_PINHOLE cameras) supported!"
 
-        # check if image exists
-        if not os.path.exists(image_path):
-            continue
+        train_image_path = os.path.join(images_folder, os.path.basename(extr.name))
+        test_image_path = os.path.join(test_images_folder, os.path.basename(extr.name))
 
-        image_name = os.path.basename(image_path).split(".")[0]
-        image = Image.open(image_path)
-        # read object mask
-        # modify /sge to /inpaint_2d_unseen_mask in finetune mode
-        image_extensions = ['.jpg', '.JPG', '.png', '.PNG']
-        if stage == 'inpaint':
-            # image_base_path = os.path.join(os.path.dirname(images_folder)+'/inpaint_2d_unseen_mask_great', os.path.splitext(os.path.basename(extr.name))[0])
-            image_base_path = os.path.join(os.path.dirname(images_folder)+'/inpaint_2d_unseen_mask', os.path.splitext(os.path.basename(extr.name))[0])
-            # image_base_path = os.path.join(os.path.dirname(images_folder)+'/inpaint_2d_unseen_mask', f"{idx:05d}")
-        elif stage == 'train':
-            image_base_path = os.path.join(
-                os.path.dirname(images_folder) + "/object_masks",
-                os.path.splitext(os.path.basename(extr.name))[0],
+        # check if image exists in training image folder
+        if os.path.exists(train_image_path):
+            image_path = train_image_path
+            image_name = os.path.basename(image_path).split(".")[0]
+            image = Image.open(image_path)
+
+            image_extensions = [".jpg", ".JPG", ".png", ".PNG"]
+            if stage == "inpaint":
+                # image_base_path = os.path.join(os.path.dirname(images_folder)+'/inpaint_2d_unseen_mask_great', os.path.splitext(os.path.basename(extr.name))[0])
+                image_base_path = os.path.join(
+                    os.path.dirname(images_folder) + "/inpaint_2d_unseen_mask",
+                    os.path.splitext(os.path.basename(extr.name))[0],
+                )
+                # image_base_path = os.path.join(os.path.dirname(images_folder)+'/inpaint_2d_unseen_mask', f"{idx:05d}")
+            elif stage == "train":
+                image_base_path = os.path.join(
+                    os.path.dirname(images_folder) + "/object_masks",
+                    os.path.splitext(os.path.basename(extr.name))[0],
+                )
+            elif stage == "removal":
+                image_base_path = os.path.join(
+                    os.path.dirname(images_folder) + "/object_masks",
+                    os.path.splitext(os.path.basename(extr.name))[0],
+                )
+            else:
+                raise ValueError(f"stage {stage} not supported")
+
+            image_mask = None
+            image_mask_path = None
+            for ext in image_extensions:
+                if os.path.exists(image_base_path + ext):
+                    image_mask_path = image_base_path + ext
+                    break
+
+            image_mask = np.array(Image.open(image_mask_path).convert("L"))
+            mask_array = np.where(image_mask > 127, 1, 0)
+            image_mask = Image.fromarray((mask_array * 255).astype(np.uint8))
+
+            cam_info = CameraInfo(
+                uid=uid,
+                R=R,
+                T=T,
+                FovY=FovY,
+                FovX=FovX,
+                image=image,
+                image_mask=None,
+                image_path=image_path,
+                image_name=image_name,
+                width=width,
+                height=height,
             )
-        elif stage == 'removal':
-            image_base_path = os.path.join(
-                os.path.dirname(images_folder) + "/object_masks",
-                os.path.splitext(os.path.basename(extr.name))[0],
+            train_cam_infos.append(cam_info)
+        # check if image exists in testing image folder
+        elif os.path.exist(test_image_path):
+            image_path = test_image_path
+            image_name = os.path.basename(image_path).split(".")[0]
+            image = Image.open(image_path)
+
+            cam_info = CameraInfo(
+                uid=uid,
+                R=R,
+                T=T,
+                FovY=FovY,
+                FovX=FovX,
+                image=image,
+                image_mask=None,
+                image_path=image_path,
+                image_name=image_name,
+                width=width,
+                height=height,
             )
+            test_cam_infos.append(cam_info)
         else:
-            raise ValueError(f"stage {stage} not supported")
+            raise ValueError(f"Image: {image_name} not found")
 
-        image_mask = None
-        image_mask_path = None
-        for ext in image_extensions:
-            if os.path.exists(image_base_path + ext):
-                image_mask_path = image_base_path + ext
-                break
-
-        image_mask = np.array(Image.open(image_mask_path).convert("L"))
-        mask_array = np.where(image_mask > 127, 1, 0)
-        image_mask = Image.fromarray((mask_array * 255).astype(np.uint8))
-
-        # resize mask to image size if needed
-        if image_mask.size != image.size:
-            image_mask = image_mask.resize(image.size, Image.ANTIALIAS)
-
-        cam_info = CameraInfo(uid=uid, R=R, T=T, FovY=FovY, FovX=FovX, image=image, image_mask=image_mask,
-                              image_path=image_path, image_name=image_name, width=width, height=height)
-        cam_infos.append(cam_info)
     sys.stdout.write('\n')
-    return cam_infos
+
+    return train_cam_infos, test_cam_infos
+
 
 def fetchPly(path):
     plydata = PlyData.read(path)
@@ -160,7 +200,7 @@ def storePly(path, xyz, rgb):
     dtype = [('x', 'f4'), ('y', 'f4'), ('z', 'f4'),
             ('nx', 'f4'), ('ny', 'f4'), ('nz', 'f4'),
             ('red', 'u1'), ('green', 'u1'), ('blue', 'u1')]
-    
+
     normals = np.zeros_like(xyz)
 
     elements = np.empty(xyz.shape[0], dtype=dtype)
@@ -171,6 +211,7 @@ def storePly(path, xyz, rgb):
     vertex_element = PlyElement.describe(elements, 'vertex')
     ply_data = PlyData([vertex_element])
     ply_data.write(path)
+
 
 def readColmapSceneInfo(path, images, eval, llffhold=8, stage="train"):
     try:
@@ -184,16 +225,19 @@ def readColmapSceneInfo(path, images, eval, llffhold=8, stage="train"):
         cam_extrinsics = read_extrinsics_text(cameras_extrinsic_file)
         cam_intrinsics = read_intrinsics_text(cameras_intrinsic_file)
 
+    # load training images from {images}, and testing images from {test_images}
     reading_dir = "images" if images == None else images
-    cam_infos_unsorted = readColmapCameras(cam_extrinsics=cam_extrinsics, cam_intrinsics=cam_intrinsics, images_folder=os.path.join(path, reading_dir), stage=stage)
-    cam_infos = sorted(cam_infos_unsorted.copy(), key = lambda x : x.image_name)
+    train_cam_infos_unsorted, test_cam_infos_unsorted = readColmapCameras(
+        cam_extrinsics=cam_extrinsics,
+        cam_intrinsics=cam_intrinsics,
+        images_folder=os.path.join(path, reading_dir),
+        stage=stage,
+    )
 
-    if eval:
-        train_cam_infos = [c for idx, c in enumerate(cam_infos) if idx % llffhold != 0]
-        test_cam_infos = [c for idx, c in enumerate(cam_infos) if idx % llffhold == 0]
-    else:
-        train_cam_infos = cam_infos
-        test_cam_infos = []
+    train_cam_infos = sorted(
+        train_cam_infos_unsorted.copy(), key=lambda x: x.image_name
+    )
+    test_cam_infos = sorted(test_cam_infos_unsorted.copy(), key=lambda x: x.image_name)
 
     nerf_normalization = getNerfppNorm(train_cam_infos)
 
@@ -218,6 +262,7 @@ def readColmapSceneInfo(path, images, eval, llffhold=8, stage="train"):
                            nerf_normalization=nerf_normalization,
                            ply_path=ply_path)
     return scene_info
+
 
 def readCamerasFromTransforms(path, transformsfile, white_background, extension=".png"):
     cam_infos = []
