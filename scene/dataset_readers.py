@@ -152,7 +152,7 @@ def readColmapCameras(
                 FovY=FovY,
                 FovX=FovX,
                 image=image,
-                image_mask=None,
+                image_mask=image_mask,
                 image_path=image_path,
                 image_name=image_name,
                 width=width,
@@ -239,6 +239,8 @@ def readColmapSceneInfo(path, images, eval, llffhold=8, stage="train"):
         train_cam_infos_unsorted.copy(), key=lambda x: x.image_name
     )
     test_cam_infos = sorted(test_cam_infos_unsorted.copy(), key=lambda x: x.image_name)
+
+    print(f"Train cameras: {len(train_cam_infos)}, Test cameras: {len(test_cam_infos)}")
 
     nerf_normalization = getNerfppNorm(train_cam_infos)
 
