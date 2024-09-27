@@ -188,7 +188,8 @@ class GaussianExtractor(object):
                 # torchvision.utils.save_image(unseen_mask_final[:1, :], "tmp3/a_unseen_mask_final.png")
                 self.unseenmaps.append(unseen_mask_final[:1, :].cpu())
                 # breakpoint()
-            
+            else:
+                self.unseenmaps.append(torch.zeros_like(depth).cpu())
             
             try:
                 render_pkg = self.render_mask(viewpoint_cam, self.gaussians)
