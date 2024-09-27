@@ -232,6 +232,7 @@ def readColmapSceneInfo(path, images, eval, llffhold=8, stage="train"):
         cam_intrinsics=cam_intrinsics,
         images_folder=os.path.join(path, reading_dir),
         stage=stage,
+        test_images_folder="test_images",
     )
 
     train_cam_infos = sorted(
