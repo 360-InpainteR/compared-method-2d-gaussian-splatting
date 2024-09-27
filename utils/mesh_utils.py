@@ -139,12 +139,13 @@ class GaussianExtractor(object):
                 unseen_mask = torch.zeros_like(object_mask)
                 ref_viewpoint_cams = [viewpoint_stack[id] for id in range(len(viewpoint_stack)) if id != i]
                 for ref_viewpoint_cam in ref_viewpoint_cams:
+                    # SOL.1 Warp the object mask
                     # render_pkg = render(ref_viewpoint_cam, gaussians)
                     # ref_depth = render_pkg['surf_depth']
                     ref_object_mask = torch.tensor(ref_viewpoint_cam.original_image_mask, dtype=torch.float).cuda()    
-                    # ref_object_mask = ref_object_mask.repeat(3, 1, 1)
+                
                     ref_object_mask_warp, original_indices, ref_indices = warping(viewpoint_cam, ref_viewpoint_cam, object_mask, depth, device='cuda')
-                    
+                        
                     AND_ref = ref_object_mask * ref_object_mask_warp[:1, :]
                     # original_ref_object_mask = object_mask.clone()
                     unseen_mask[:, original_indices[:, 0], original_indices[:, 1]] = AND_ref[:, ref_indices[:, 0], ref_indices[:, 1]]
@@ -157,17 +158,36 @@ class GaussianExtractor(object):
                     # torchvision.utils.save_image(unseen_mask[:1, :], "tmp3/a_unseen_mask.png")
                     
                     
+                    # # SOL.2 Warp the depth
+                    # ref_object_mask = torch.tensor(ref_viewpoint_cam.original_image_mask, dtype=torch.float).cuda()    
+                    # ref_depth_warp, original_indices, ref_indices = warping(viewpoint_cam, ref_viewpoint_cam, depth, depth, device='cuda')
+                    # ref_depth = self.render(ref_viewpoint_cam, self.gaussians)['surf_depth']
+                    # AND_ref = ref_object_mask[:1, :] * ((ref_depth_warp - ref_depth).abs() < 1.0).float()
+                    # unseen_mask[:, original_indices[:, 0], original_indices[:, 1]] = AND_ref[:, ref_indices[:, 0], ref_indices[:, 1]]
+                    # unseen_mask = unseen_mask * object_mask
+                    # unseen_mask_final += unseen_mask
+                    
+                    # # torchvision.utils.save_image(ref_object_mask, f"tmp3/a_ref_object_mask.png")
+                    # # torchvision.utils.save_image(AND_ref, f"tmp3/a_ref_object_mask_warp.png")
+                    # # torchvision.utils.save_image(unseen_mask[:1, :], "tmp3/a_unseen_mask.png")
+                    # # breakpoint()
+                    
+                    
+                # TYPE1: gen by warp
                 unseen_mask_final = unseen_mask_final / len(ref_viewpoint_cams)
+                # TYPE2: no gaussian region
+                unseen_mask_final[:1][depth == 0] = 1 # unseen region 
                 
                 # Thresholding
-                # thr = 0.3
-                # unseen_mask_final[unseen_mask_final > thr] = 1
-                # unseen_mask_final[unseen_mask_final <= thr] = 0
                 
-                torchvision.utils.save_image(object_mask, f"tmp3/a_object_mask.png")
-                torchvision.utils.save_image(unseen_mask_final[:1, :], "tmp3/a_unseen_mask_final.png")
+                thr = 0.35
+                unseen_mask_final[unseen_mask_final > thr] = 1
+                unseen_mask_final[unseen_mask_final <= thr] = 0
+                
+                # torchvision.utils.save_image(object_mask, f"tmp3/a_object_mask.png")
+                # torchvision.utils.save_image(unseen_mask_final[:1, :], "tmp3/a_unseen_mask_final.png")
                 self.unseenmaps.append(unseen_mask_final[:1, :].cpu())
-                breakpoint()
+                # breakpoint()
             
             
             try:
