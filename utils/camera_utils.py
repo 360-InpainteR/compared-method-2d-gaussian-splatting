@@ -3,7 +3,7 @@
 # GRAPHDECO research group, https://team.inria.fr/graphdeco
 # All rights reserved.
 #
-# This software is free for non-commercial, research and evaluation use 
+# This software is free for non-commercial, research and evaluation use
 # under the terms of the LICENSE.md file.
 #
 # For inquiries contact  george.drettakis@inria.fr
@@ -47,11 +47,13 @@ def loadCam(args, id, cam_info, resolution_scale):
         resized_image_rgb = PILtoTorch(cam_info.image, resolution)
         loaded_mask = None
         gt_image = resized_image_rgb
-    
+
     # load mask if available
-    resized_image_mask_rgb = cam_info.image_mask.resize(resolution)
-    gt_image_mask = np.array(resized_image_mask_rgb)
-    gt_image_mask = np.where(gt_image_mask >127, 1, 0).astype(np.uint8)
+    gt_image_mask = None
+    if cam_info.image_mask is not None:
+        resized_image_mask_rgb = cam_info.image_mask.resize(resolution)
+        gt_image_mask = np.array(resized_image_mask_rgb)
+        gt_image_mask = np.where(gt_image_mask > 127, 1, 0).astype(np.uint8)
 
     return Camera(colmap_id=cam_info.uid, R=cam_info.R, T=cam_info.T, 
                   FoVx=cam_info.FovX, FoVy=cam_info.FovY, 
