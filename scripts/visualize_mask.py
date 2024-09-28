@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 import argparse
 import re
 from natsort import natsorted
+import mediapy as media
 
 
 def blend_image_with_mask(image, mask, alpha=0.5, obj_id=None):
@@ -91,37 +92,44 @@ def render_video_with_mask(
     first_image = np.array(Image.open(first_image_path).convert("RGB"))
     height, width, _ = first_image.shape
 
-    # Set up the video writer
-    fourcc = cv2.VideoWriter_fourcc(*"mp4v")  # Codec for MP4
-    video_writer = cv2.VideoWriter(output_video, fourcc, fps, (width, height))
 
-    # Iterate over each image and mask, blend them, and write to the video
-    for img_file, mask_file in zip(img_files, mask_files):
-        img_path = os.path.join(img_dir, img_file)
-        mask_path = os.path.join(mask_dir, mask_file)
+    video_kwargs = {
+        'shape': (height, width),
+        'codec': 'h264',
+        'fps': 60,
+        'crf': 18,
+    }
+    with media.VideoWriter(output_video, **video_kwargs, input_format='rgb') as video_writer:
 
-        # Read the image and mask
-        image = np.array(Image.open(img_path).convert("RGB"))
-        mask = np.array(
-            Image.open(mask_path).convert("L")
-        )  # Convert mask to grayscale (0 and 255)
+        # Iterate over each image and mask, blend them, and write to the video
+        for img_file, mask_file in zip(img_files, mask_files):
+            img_path = os.path.join(img_dir, img_file)
+            mask_path = os.path.join(mask_dir, mask_file)
 
-        # Blend the image with the mask using the colormap color
-        blended_image = blend_image_with_mask(image, mask, alpha, obj_id=obj_id)
+            # Read the image and mask
+            image = np.array(Image.open(img_path).convert("RGB"))
+            mask = np.array(
+                Image.open(mask_path).convert("L")
+            )  # Convert mask to grayscale (0 and 255)
 
-        # Convert to the right format for OpenCV
-        blended_image_bgr = cv2.cvtColor(
-            blended_image.astype(np.uint8), cv2.COLOR_RGB2BGR
-        )
+            # Blend the image with the mask using the colormap color
+            blended_image = blend_image_with_mask(image, mask, alpha, obj_id=obj_id)
 
-        # Write the frame to the video
-        video_writer.write(blended_image_bgr)
+            # Convert to the right format for OpenCV
+            blended_image_bgr = cv2.cvtColor(
+                blended_image.astype(np.uint8), cv2.COLOR_RGB2BGR
+            )
 
-        print(f"Processed {img_file} with {mask_file}")
+            # Write the frame to the video
+            blended_image_rgb = cv2.cvtColor(blended_image_bgr, cv2.COLOR_BGR2RGB)
+            video_writer.add_image(blended_image_rgb)
+            # video_writer.write(blended_image_bgr)
 
-    # Release the video writer
-    video_writer.release()
-    print(f"Video saved to {output_video}")
+            print(f"Processed {img_file} with {mask_file}")
+
+        # Release the video writer
+        # video_writer.release()
+        print(f"Video saved to {output_video}")
 
 
 if __name__ == "__main__":
