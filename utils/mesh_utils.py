@@ -176,7 +176,15 @@ class GaussianExtractor(object):
                 # TYPE1: gen by warp
                 unseen_mask_final = unseen_mask_final / len(ref_viewpoint_cams)
                 # TYPE2: no gaussian region
-                unseen_mask_final[:1][depth == 0] = 1 # unseen region 
+                # unseen_mask_final[:1][depth == 0] = 1 # unseen region 
+                # TYPE3: 
+                render_pkg = self.render_mask(viewpoint_cam, self.gaussians)
+                seen = render_pkg['is_masked'][1][None]
+                unseen_mask_final[:1][seen < 0.5] = 1
+                
+                # And with object mask
+                unseen_mask_final[:1][object_mask[:1]== 0] = 0
+                
                 
                 # Thresholding
                 

@@ -166,7 +166,7 @@ def removal(dataset : ModelParams, iteration : int, pipeline : PipelineParams, s
         if not skip_test and (len(scene.getTestCameras()) > 0):
             print("export removal rendered testing images ...")
             os.makedirs(test_dir, exist_ok=True)
-            gaussExtractor.reconstruction(scene.getTestCameras(), gen_unseen_mask=True)
+            gaussExtractor.reconstruction(scene.getTestCameras())
             gaussExtractor.export_image(test_dir)
             
         if args.render_path:
