@@ -175,7 +175,7 @@ def removal(dataset : ModelParams, iteration : int, pipeline : PipelineParams, s
             os.makedirs(traj_dir, exist_ok=True)
             n_fames = 240
             cam_traj = generate_path(scene.getTrainCameras(), n_frames=n_fames)
-            gaussExtractor.reconstruction(cam_traj, gen_unseen_mask=True)
+            gaussExtractor.reconstruction(cam_traj)
             gaussExtractor.export_image(traj_dir)
             create_videos(base_dir=traj_dir,
                         input_dir=traj_dir, 
