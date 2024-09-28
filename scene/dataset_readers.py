@@ -160,7 +160,7 @@ def readColmapCameras(
             )
             train_cam_infos.append(cam_info)
         # check if image exists in testing image folder
-        elif os.path.exist(test_image_path):
+        elif os.path.exists(test_image_path):
             image_path = test_image_path
             image_name = os.path.basename(image_path).split(".")[0]
             image = Image.open(image_path)
@@ -232,7 +232,7 @@ def readColmapSceneInfo(path, images, eval, llffhold=8, stage="train"):
         cam_intrinsics=cam_intrinsics,
         images_folder=os.path.join(path, reading_dir),
         stage=stage,
-        test_images_folder="test_images",
+        test_images_folder=os.path.join(path, "test_images"),
     )
 
     train_cam_infos = sorted(
