@@ -117,7 +117,7 @@ def readColmapCameras(
             if stage == "inpaint":
                 # image_base_path = os.path.join(os.path.dirname(images_folder)+'/inpaint_2d_unseen_mask_great', os.path.splitext(os.path.basename(extr.name))[0])
                 image_base_path = os.path.join(
-                    os.path.dirname(images_folder) + "/inpaint_2d_unseen_mask",
+                    os.path.dirname(images_folder) + "/unseen_mask",
                     os.path.splitext(os.path.basename(extr.name))[0],
                 )
                 # image_base_path = os.path.join(os.path.dirname(images_folder)+'/inpaint_2d_unseen_mask', f"{idx:05d}")
@@ -128,7 +128,7 @@ def readColmapCameras(
                 )
             elif stage == "removal":
                 image_base_path = os.path.join(
-                    os.path.dirname(images_folder) + "/object_masks",
+                    os.path.dirname(images_folder) + "/rend_object_masks",
                     os.path.splitext(os.path.basename(extr.name))[0],
                 )
             else:
@@ -141,9 +141,14 @@ def readColmapCameras(
                     image_mask_path = image_base_path + ext
                     break
 
-            image_mask = np.array(Image.open(image_mask_path).convert("L"))
-            mask_array = np.where(image_mask > 127, 1, 0)
-            image_mask = Image.fromarray((mask_array * 255).astype(np.uint8))
+            if stage == "removal":
+                image_mask = np.array(Image.open(image_mask_path).convert("L"))
+                mask_array = np.where(image_mask > 10, 1, 0)
+                image_mask = Image.fromarray((mask_array * 255).astype(np.uint8))
+            else:
+                image_mask = np.array(Image.open(image_mask_path).convert("L"))
+                mask_array = np.where(image_mask > 127, 1, 0)
+                image_mask = Image.fromarray((mask_array * 255).astype(np.uint8))
 
             cam_info = CameraInfo(
                 uid=uid,
@@ -180,10 +185,11 @@ def readColmapCameras(
             )
             test_cam_infos.append(cam_info)
         else:
-            raise ValueError(f"Image: {image_name} not found")
+            # raise ValueError(f"Image: {image_name} not found in train / test")
+            print(f"Image: {extr.name} not found in train / test")
+            continue
 
     sys.stdout.write('\n')
-
     return train_cam_infos, test_cam_infos
 
 
