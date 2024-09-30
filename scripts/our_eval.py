@@ -36,6 +36,11 @@ lpipss = []
 ssims_object = []
 psnrs_object = []
 lpipss_object = []
+
+import subprocess
+res = subprocess.run(["python", "-m", "pytorch_fid", img_dir, gt_dir])
+print(res)
+
 for i, img_name in tqdm(enumerate(natsorted(os.listdir(img_dir)))):
     img = Image.open(os.path.join(img_dir, img_name))
     gt = Image.open(os.path.join(gt_dir, gt_list[i]))
@@ -59,18 +64,22 @@ for i, img_name in tqdm(enumerate(natsorted(os.listdir(img_dir)))):
     psnrs_object.append(psnr(img_tensor_object, gt_tensor_object)) 
     lpipss_object.append(lpips(img_tensor_object, gt_tensor_object, net_type='vgg'))
     
-    
-print("==========Full Image==========")    
-print("  SSIM : {:>12.7f}".format(torch.tensor(ssims).mean(), ".5"))
-print("  PSNR : {:>12.7f}".format(torch.tensor(psnrs).mean(), ".5"))
-print("  LPIPS: {:>12.7f}".format(torch.tensor(lpipss).mean(), ".5"))
-print("==========Object==========")
-print("  SSIM : {:>12.7f}".format(torch.tensor(ssims_object).mean(), ".5"))
-print("  PSNR : {:>12.7f}".format(torch.tensor(psnrs_object).mean(), ".5"))
-print("  LPIPS: {:>12.7f}".format(torch.tensor(lpipss_object).mean(), ".5"))
 
-    
-    
+os.system(f"python -m pytorch_fid {img_dir} {gt_dir}")
+
+
+
+print("==========Full Image==========")    
+print("  SSIM : {:>12.7f}".format(torch.tensor(ssims).mean(), ".2"))
+print("  PSNR : {:>12.7f}".format(torch.tensor(psnrs).mean(), ".2"))
+print("  LPIPS: {:>12.7f}".format(torch.tensor(lpipss).mean(), ".2"))
+print("==========Object==========")
+print("  SSIM : {:>12.7f}".format(torch.tensor(ssims_object).mean(), ".2"))
+print("  PSNR : {:>12.7f}".format(torch.tensor(psnrs_object).mean(), ".2"))
+print("  LPIPS: {:>12.7f}".format(torch.tensor(lpipss_object).mean(), ".2"))
+
+print("========== ==========\n")    
+print(f"{torch.tensor(ssims).mean():.2f} ({torch.tensor(ssims_object).mean():.2f}) {torch.tensor(lpipss).mean():.2f} ({torch.tensor(psnrs_object).mean():.2f}) {torch.tensor(lpipss).mean():.2f} ({torch.tensor(lpipss_object).mean():.2f})")
     
 
 
