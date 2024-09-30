@@ -25,6 +25,13 @@ from utils.render_utils import generate_path, create_videos
 
 import open3d as o3d
 
+from natsort import natsorted
+def change_name(dir, ref_dir):
+    # chaneg each file name in dir as the file name in ref_dir
+    name_list = natsorted(os.listdir(ref_dir))
+    for i, file in enumerate(natsorted(os.listdir(dir))):
+        os.rename(os.path.join(dir, file), os.path.join(dir, name_list[i]))
+
 if __name__ == "__main__":
     # Set up command line argument parser
     parser = ArgumentParser(description="Testing script parameters")
@@ -62,7 +69,14 @@ if __name__ == "__main__":
         gaussExtractor.reconstruction(scene.getTrainCameras())
         gaussExtractor.export_image(train_dir)
         
-    
+        # copy rendered object mask to source path for the usage of getting better unseen mask
+        rend_object_mask_dir = os.path.join(dataset.model_path, "train/ours_{}".format(iteration), "object_mask")
+        if os.path.exists(f"{dataset.source_path}/rend_object_masks"):
+            os.system(f"rm -rf {dataset.source_path}/rend_object_masks")
+        os.system(f"cp -r {rend_object_mask_dir} {dataset.source_path}/rend_object_masks")
+        change_name(f"{dataset.source_path}/rend_object_masks", os.path.join(dataset.source_path, "object_masks"))
+        
+        
     if (not args.skip_test) and (len(scene.getTestCameras()) > 0):
         print("export rendered testing images ...")
         os.makedirs(test_dir, exist_ok=True)
