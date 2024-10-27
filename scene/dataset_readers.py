@@ -32,6 +32,7 @@ class CameraInfo(NamedTuple):
     image: np.array
     image_path: str
     image_name: str
+    image_mask: str
     width: int
     height: int
 
@@ -254,7 +255,202 @@ def readNerfSyntheticInfo(path, white_background, eval, extension=".png"):
                            ply_path=ply_path)
     return scene_info
 
+def readColmapCamerasAura(
+    cam_extrinsics, cam_intrinsics, images_folder, stage, test_images_folder
+):
+    train_cam_infos = []
+    test_cam_infos = []
+    # # handle for inpaint stage
+    # if stage == "inpaint":
+    #     # new of reference image is corresponding to the last image in the training cam
+    #     # replace the dir of image_folder to the dir name "reference"    
+    #     reference_img_path = images_folder.replace(f"{os.path.basename(images_folder)}", "reference")
+    #     breakpoint()
+    for idx, key in enumerate(cam_extrinsics):
+        sys.stdout.write('\r')
+        # the exact output you're looking for:
+        sys.stdout.write(
+            "Reading camera {} - extrinsics {}".format(idx + 1, len(cam_extrinsics))
+        )
+        sys.stdout.flush()
+
+        extr = cam_extrinsics[key]
+        intr = cam_intrinsics[extr.camera_id]
+        height = intr.height
+        width = intr.width
+
+        uid = intr.id
+        R = np.transpose(qvec2rotmat(extr.qvec))
+        T = np.array(extr.tvec)
+
+        if intr.model=="SIMPLE_PINHOLE":
+            focal_length_x = intr.params[0]
+            FovY = focal2fov(focal_length_x, height)
+            FovX = focal2fov(focal_length_x, width)
+        elif intr.model=="PINHOLE":
+            focal_length_x = intr.params[0]
+            focal_length_y = intr.params[1]
+            FovY = focal2fov(focal_length_y, height)
+            FovX = focal2fov(focal_length_x, width)
+        else:
+            assert (
+                False
+            ), "Colmap camera model not handled: only undistorted datasets (PINHOLE or SIMPLE_PINHOLE cameras) supported!"
+
+        train_image_path = os.path.join(images_folder, os.path.basename(extr.name))
+        test_image_path = os.path.join(test_images_folder, os.path.basename(extr.name))
+        # handle for inpaint_images
+        if stage == "inpaint":
+            image_extensions = [".jpg", ".JPG", ".png", ".PNG"]
+            for ext in image_extensions:
+                train_image_path = os.path.join(images_folder, os.path.basename(extr.name).split(".")[0] + ext)
+                if os.path.exists(train_image_path):
+                    break
+            for ext in image_extensions:
+                test_image_path = os.path.join(test_images_folder, os.path.basename(extr.name).split(".")[0] + ext)
+                if os.path.exists(test_image_path):
+                    break
+        # check if image exists in training image folder
+        if os.path.exists(train_image_path):
+            image_path = train_image_path
+            image_name = os.path.basename(image_path).split(".")[0]
+            image = Image.open(image_path)
+
+            image_extensions = [".jpg", ".JPG", ".png", ".PNG"]
+            if stage == "inpaint":
+                # image_base_path = os.path.join(os.path.dirname(images_folder)+'/inpaint_2d_unseen_mask_great', os.path.splitext(os.path.basename(extr.name))[0])
+                image_base_path = os.path.join(
+                    os.path.dirname(images_folder) + "/unseen_mask_dilated",
+                    os.path.splitext(os.path.basename(extr.name))[0],
+                )
+                # image_base_path = os.path.join(os.path.dirname(images_folder)+'/inpaint_2d_unseen_mask', f"{idx:05d}")
+            elif stage == "train":
+                image_base_path = os.path.join(
+                    os.path.dirname(images_folder) + "/object_masks",
+                    os.path.splitext(os.path.basename(extr.name))[0],
+                )
+            elif stage == "removal":
+                image_base_path = os.path.join(
+                    os.path.dirname(images_folder) + "/rend_object_masks",
+                    os.path.splitext(os.path.basename(extr.name))[0],
+                )
+            else:
+                raise ValueError(f"stage {stage} not supported")
+
+            image_mask = None
+            image_mask_path = None
+            for ext in image_extensions:
+                if os.path.exists(image_base_path + ext):
+                    image_mask_path = image_base_path + ext
+                    break
+
+            if stage == "removal":
+                image_mask = np.array(Image.open(image_mask_path).convert("L"))
+                mask_array = np.where(image_mask > 10, 1, 0)
+                image_mask = Image.fromarray((mask_array * 255).astype(np.uint8))
+            else:
+                image_mask = np.array(Image.open(image_mask_path).convert("L"))
+                mask_array = np.where(image_mask > 127, 1, 0)
+                image_mask = Image.fromarray((mask_array * 255).astype(np.uint8))
+
+            cam_info = CameraInfo(
+                uid=uid,
+                R=R,
+                T=T,
+                FovY=FovY,
+                FovX=FovX,
+                image=image,
+                image_mask=image_mask,
+                image_path=image_path,
+                image_name=image_name,
+                width=width,
+                height=height,
+            )
+            train_cam_infos.append(cam_info)
+        # check if image exists in testing image folder
+        elif os.path.exists(test_image_path):
+            image_path = test_image_path
+            image_name = os.path.basename(image_path).split(".")[0]
+            image = Image.open(image_path)
+
+            cam_info = CameraInfo(
+                uid=uid,
+                R=R,
+                T=T,
+                FovY=FovY,
+                FovX=FovX,
+                image=image,
+                image_mask=None,
+                image_path=image_path,
+                image_name=image_name,
+                width=width,
+                height=height,
+            )
+            test_cam_infos.append(cam_info)
+        else:
+            # raise ValueError(f"Image: {image_name} not found in train / test")
+            print(f"Image: {extr.name} not found in train / test")
+            continue
+
+    sys.stdout.write('\n')
+    return train_cam_infos, test_cam_infos
+
+
+def readColmapSceneInfoAura(path, images, eval, llffhold=8, stage="inpaint"):
+    try:
+        cameras_extrinsic_file = os.path.join(path, "sparse/0", "images.bin")
+        cameras_intrinsic_file = os.path.join(path, "sparse/0", "cameras.bin")
+        cam_extrinsics = read_extrinsics_binary(cameras_extrinsic_file)
+        cam_intrinsics = read_intrinsics_binary(cameras_intrinsic_file)
+    except:
+        cameras_extrinsic_file = os.path.join(path, "sparse/0", "images.txt")
+        cameras_intrinsic_file = os.path.join(path, "sparse/0", "cameras.txt")
+        cam_extrinsics = read_extrinsics_text(cameras_extrinsic_file)
+        cam_intrinsics = read_intrinsics_text(cameras_intrinsic_file)
+
+    # load training images from {images}, and testing images from {test_images}
+    reading_dir = "images" if images == None else images
+    train_cam_infos_unsorted, test_cam_infos_unsorted = readColmapCamerasAura(
+        cam_extrinsics=cam_extrinsics,
+        cam_intrinsics=cam_intrinsics,
+        images_folder=os.path.join(path, reading_dir),
+        stage=stage,
+        test_images_folder=os.path.join(path, "test_images"),
+    )
+
+    train_cam_infos = sorted(
+        train_cam_infos_unsorted.copy(), key=lambda x: x.image_name
+    )
+    test_cam_infos = sorted(test_cam_infos_unsorted.copy(), key=lambda x: x.image_name)
+
+    print(f"Train cameras: {len(train_cam_infos)}, Test cameras: {len(test_cam_infos)}")
+
+    nerf_normalization = getNerfppNorm(train_cam_infos)
+
+    ply_path = os.path.join(path, "sparse/0/points3D.ply")
+    bin_path = os.path.join(path, "sparse/0/points3D.bin")
+    txt_path = os.path.join(path, "sparse/0/points3D.txt")
+    if not os.path.exists(ply_path):
+        print("Converting point3d.bin to .ply, will happen only the first time you open the scene.")
+        try:
+            xyz, rgb, _ = read_points3D_binary(bin_path)
+        except:
+            xyz, rgb, _ = read_points3D_text(txt_path)
+        storePly(ply_path, xyz, rgb)
+    try:
+        pcd = fetchPly(ply_path)
+    except:
+        pcd = None
+
+    scene_info = SceneInfo(point_cloud=pcd,
+                           train_cameras=train_cam_infos,
+                           test_cameras=test_cam_infos,
+                           nerf_normalization=nerf_normalization,
+                           ply_path=ply_path)
+    return scene_info
+
 sceneLoadTypeCallbacks = {
     "Colmap": readColmapSceneInfo,
-    "Blender" : readNerfSyntheticInfo
+    "Blender" : readNerfSyntheticInfo,
+    "Aura": readColmapSceneInfoAura,
 }
