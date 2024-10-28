@@ -1,11 +1,13 @@
 import cv2
 import torch
+from diffusers.schedulers import DDPMScheduler
 from pietorch import blend, blend_wide
-
-from utils.general_utils import vis_depth
-from utils.loss_utils import l1_loss
 from tqdm import tqdm
 
+from utils.autoencoder_utils import AutoencoderKL
+from utils.general_utils import vis_depth
+from utils.loss_utils import l1_loss
+from utils.marigold_utils import MarigoldDepthInpaintingPipeline
 
 midas = torch.hub.load("intel-isl/MiDaS", "DPT_Hybrid")
 midas = midas.to("cuda")
@@ -72,8 +74,10 @@ def estimate_depth(img, mode='test'):
         
 #     # return depth
 
-from transformers import pipeline
 from PIL import Image
+from transformers import pipeline
+
+
 def estimate_depth_depth_anything_v2(rgb):
     """_summary_
 
@@ -200,3 +204,77 @@ def align_depth_least_square(depth, estimated_depth, unseen_mask):
     # depth_ref = (scale * estimated_depth + shift).clamp(0.01, 100)
     
     return depth_ref
+
+
+# ==============================
+# Guided Depth Diffusion Alignment 
+# ==============================
+def normalize_depth_ignore_zeros(depth_tensor, min_val=None, max_val=None):
+    """
+    將 depth tensor 正規化到 0~1 範圍，忽略值為 0 的區域
+    
+    參數:
+    depth_tensor (torch.Tensor): 輸入的 depth tensor
+    min_val (float): 自定義的最小值，預設為 None (使用非零區域的最小值)
+    max_val (float): 自定義的最大值，預設為 None (使用非零區域的最大值)
+    
+    回傳:
+    torch.Tensor: 正規化後的 tensor，原本為 0 的區域保持為 0
+    """
+    # 將輸入轉換為 float 類型
+    depth_tensor = depth_tensor.float()
+    
+    # 創建非零區域的 mask
+    valid_mask = (depth_tensor != 0)
+    
+    # 只從非零區域取得最大最小值
+    if min_val is None:
+        min_val = torch.min(depth_tensor[valid_mask])
+    if max_val is None:
+        max_val = torch.max(depth_tensor[valid_mask])
+    
+    # 避免除以零
+    if max_val == min_val:
+        return torch.zeros_like(depth_tensor)
+    
+    # 創建輸出 tensor
+    normalized = torch.zeros_like(depth_tensor)
+    
+    # 只正規化非零區域
+    normalized[valid_mask] = (depth_tensor[valid_mask] - min_val) / (max_val - min_val)
+    
+    return normalized
+
+def unnormalize_depth_ignore_zeros(depth_tensor, ref_depth_tensor):
+    valid_mask = (ref_depth_tensor != 0)
+    min_val = torch.min(ref_depth_tensor[valid_mask])
+    max_val = torch.max(ref_depth_tensor[valid_mask])
+    # unnormalize the align_depth from original gt depth, ignore the zero values
+    unnormalized = depth_tensor * (max_val - min_val) + min_val
+    return unnormalized
+
+def align_depth_marigold(depth, rgb, mask):
+    pipe = MarigoldDepthInpaintingPipeline.from_pretrained(
+        "prs-eth/marigold-v1-0", variant="fp16", torch_dtype=torch.float16 
+    ).to("cuda")
+    vae = AutoencoderKL.from_pretrained("prs-eth/marigold-v1-0", subfolder="vae").to(dtype=torch.float16).to("cuda")
+    pipe.register_modules(vae=vae)
+    pipe.scheduler = DDPMScheduler.from_config(pipe.scheduler.config)
+
+    depth[mask[None] == 1] = 0
+    gt_depth = normalize_depth_ignore_zeros(depth)
+
+    rgb = rgb.to(torch.float16)
+    gt_depth = gt_depth.to(torch.float16)
+    mask = (mask == 0).to(torch.float16)[None]
+    inpaint_depth = pipe(rgb, num_inference_steps=50, gt_depth=gt_depth, mask=mask)
+
+    print(inpaint_depth.prediction)
+    
+
+    align_depth = inpaint_depth.prediction.to(torch.float32)
+    align_depth = align_depth.squeeze(0)
+    
+    # unnormalize the align_depth from original gt depth, ignore the zero values
+    unnormalize_align_depth = unnormalize_depth_ignore_zeros(align_depth, depth)
+    return unnormalize_align_depth
